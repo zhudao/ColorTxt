@@ -8,7 +8,8 @@ import {
   shallowRef,
   watch,
 } from "vue";
-import type { PortraitExtractResult } from "@shared/aiTypes";
+import type { AITxt2ImgBackend, PortraitExtractResult } from "@shared/aiTypes";
+import { getTxt2ImgPromptFamily } from "@shared/txt2ImgBackend";
 import {
   EMPTY_TOKEN_PRICE_PER_MILLION,
   normalizeTokenPricePerMillion,
@@ -58,6 +59,8 @@ const props = withDefaults(
     characterPortraitCacheDir: string;
     characterRoster: readonly CharacterRosterEntry[];
     characterBookStyle?: CharacterBookStylePersisted;
+    /** 设置「确定」保存后递增，用于同步文生图服务商等运行时配置 */
+    aiConfigSyncNonce?: number;
   }>(),
   {
     sessionFilePath: null,
@@ -69,6 +72,7 @@ const props = withDefaults(
     characterPortraitCacheDir: "",
     characterRoster: () => [],
     characterBookStyle: undefined,
+    aiConfigSyncNonce: 0,
   },
 );
 
@@ -87,6 +91,7 @@ const emit = defineEmits<{
 
 const embeddingEnabled = ref(false);
 const txt2imgEnabled = ref(false);
+const txt2imgBackend = ref<AITxt2ImgBackend>("a1111");
 const chatTokenPricePerMillion = ref<AITokenPricePerMillion>({
   ...EMPTY_TOKEN_PRICE_PER_MILLION,
 });
@@ -319,6 +324,10 @@ const canApplyGenTemp = computed(
     Boolean(genModalDisplayName.value.trim()),
 );
 
+const genShowsNegativeAdvanced = computed(
+  () => getTxt2ImgPromptFamily(txt2imgBackend.value) === "sd",
+);
+
 const canGenerateImage = computed(
   () =>
     txt2imgEnabled.value &&
@@ -414,6 +423,7 @@ async function refreshRuntimeFlags() {
     const c = await window.colorTxt.ai.configGet();
     embeddingEnabled.value = c.embeddingEnabled;
     txt2imgEnabled.value = c.txt2img.enabled;
+    txt2imgBackend.value = c.txt2img.backend;
     chatTokenPricePerMillion.value = normalizeTokenPricePerMillion(
       c.chat.tokenPricePerMillion,
     );
@@ -533,8 +543,48 @@ watch(
   },
 );
 
-watch(generateOpen, async (open) => {
+/** 切换书籍等场景关闭立绘弹窗时不写入 meta（避免错书） */
+const genSuppressPersistOnClose = ref(false);
+
+/** 将立绘生成面板中的画风 / 形象 / 负面同步到抽屉草稿并写入 file.meta */
+function persistGenPanelTextFields(): void {
+  const styleZh = genStyleZh.value.trim();
+  const promptZh = genPromptZh.value.trim();
+  const negativeZh = genNegativeZh.value.trim();
+
+  draftStylePrefix.value = styleZh;
+  draftPromptZh.value = promptZh;
+  draftNegativeZh.value = negativeZh;
+
+  const patch: {
+    characterBookStyle: CharacterBookStylePersisted;
+    characterRoster?: CharacterRosterEntry[];
+  } = {
+    characterBookStyle: {
+      stylePrefixZh: styleZh,
+      styleNoteZh:
+        props.characterBookStyle?.styleNoteZh?.trim() ??
+        draftStyleNote.value.trim(),
+      updatedAt: Date.now(),
+    },
+  };
+
+  const editId = editingId.value;
+  if (editId != null) {
+    const idx = rosterIndexById(editId);
+    if (idx >= 0) {
+      patch.characterRoster = props.characterRoster.map((r, i) =>
+        i === idx ? { ...r, promptZh, negativeZh } : r,
+      );
+    }
+  }
+
+  emit("characterFileMetaPatch", patch);
+}
+
+watch(generateOpen, async (open, wasOpen) => {
   if (open) {
+    await refreshRuntimeFlags();
     genTempReadableUrl.value = null;
     genTmpAbsPath.value = null;
     genError.value = "";
@@ -551,6 +601,11 @@ watch(generateOpen, async (open) => {
     await refreshGenModalPreview();
     return;
   }
+  if (wasOpen && !genSuppressPersistOnClose.value) {
+    persistGenPanelTextFields();
+  }
+  genSuppressPersistOnClose.value = false;
+
   genTempReadableUrl.value = null;
   genTmpAbsPath.value = null;
   const name = genModalDisplayName.value.trim();
@@ -614,6 +669,14 @@ watch(
     }
   },
   { immediate: true },
+);
+
+watch(
+  () => props.aiConfigSyncNonce ?? 0,
+  (n, prev) => {
+    if (n <= 0 || n === prev) return;
+    void refreshRuntimeFlags();
+  },
 );
 
 watch(embeddingEnabled, () => {
@@ -836,6 +899,7 @@ watch(
 
       generating.value = false;
       genApplying.value = false;
+      genSuppressPersistOnClose.value = true;
       generateOpen.value = false;
       genTargetId.value = null;
       genError.value = "";
@@ -1104,7 +1168,8 @@ async function onDeleteSlide() {
   closeSlide();
 }
 
-function openGenerateFromDrawer() {
+async function openGenerateFromDrawer() {
+  await refreshRuntimeFlags();
   genTargetId.value = null;
   genStyleZh.value =
     props.characterBookStyle?.stylePrefixZh?.trim() ??
@@ -1142,7 +1207,7 @@ async function onGenerateCommit() {
     const res = await window.colorTxt.ai.portraitTxt2ImgToPath({
       outputPath: tmpOut,
       styleZh: genStyleZh.value.trim(),
-      promptZh: genPromptZh.value.trim(),
+      appearanceZh: genPromptZh.value.trim(),
       negativeZh: genNegativeZh.value.trim(),
     });
     if (!res.ok) {
@@ -1154,18 +1219,7 @@ async function onGenerateCommit() {
     genTmpAbsPath.value = tmpOut;
     const raw = await window.colorTxt.pathToReadableLocalUrl(tmpOut);
     genTempReadableUrl.value = raw ? withUrlCacheBust(raw) : null;
-    draftPromptZh.value = genPromptZh.value.trim();
-    draftNegativeZh.value = genNegativeZh.value.trim();
-    draftStylePrefix.value = genStyleZh.value.trim();
-    emit("characterFileMetaPatch", {
-      characterBookStyle: {
-        stylePrefixZh: genStyleZh.value.trim(),
-        styleNoteZh:
-          props.characterBookStyle?.styleNoteZh?.trim() ??
-          draftStyleNote.value.trim(),
-        updatedAt: Date.now(),
-      },
-    });
+    persistGenPanelTextFields();
     await refreshGenModalPreview();
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -1650,22 +1704,29 @@ onBeforeUnmount(() => {
           <div class="genSettingsScroll">
             <label class="genFormRow">
               <span class="genFormLabel">画风（本书通用）</span>
-              <textarea v-model="genStyleZh" rows="3" class="genFormTextarea" />
-            </label>
-            <label class="genFormRow">
-              <span class="genFormLabel">正面提示词</span>
               <textarea
-                v-model="genPromptZh"
+                v-model="genStyleZh"
                 rows="3"
                 class="genFormTextarea"
+                placeholder="描述整体的画风、色调、风格等"
               />
             </label>
             <label class="genFormRow">
-              <span class="genFormLabel">负面提示词</span>
+              <span class="genFormLabel">角色形象</span>
+              <textarea
+                v-model="genPromptZh"
+                rows="4"
+                class="genFormTextarea"
+                placeholder="描述角色的外貌、服饰、姿态等"
+              />
+            </label>
+            <label v-if="genShowsNegativeAdvanced" class="genFormRow">
+              <span class="genFormLabel">负面描述</span>
               <textarea
                 v-model="genNegativeZh"
-                rows="3"
+                rows="2"
                 class="genFormTextarea"
+                placeholder="描述你不希望出现的特征"
               />
             </label>
           </div>
@@ -2080,17 +2141,21 @@ onBeforeUnmount(() => {
   box-sizing: border-box;
 }
 
+/* 预览比例与 CharacterRosterCard 一致（宽:高 = 2:3） */
 .genPreviewCol {
   flex: 0 0 230px;
+  width: 230px;
   display: flex;
   flex-direction: column;
+  justify-content: flex-start;
   min-width: 0;
-  min-height: 0;
 }
 
 .genPreviewFrame {
-  flex: 1 1 auto;
-  min-height: 180px;
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  flex: 0 0 auto;
+  box-sizing: border-box;
   border-radius: 10px;
   border: 1px solid var(--border);
   background: var(--bg);
@@ -2101,8 +2166,8 @@ onBeforeUnmount(() => {
 }
 
 .genPreviewImg {
-  width: auto;
-  height: 340px;
+  width: 100%;
+  height: 100%;
   object-fit: contain;
   display: block;
 }
@@ -2118,6 +2183,7 @@ onBeforeUnmount(() => {
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
+  align-self: stretch;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -2152,13 +2218,21 @@ onBeforeUnmount(() => {
   min-height: 0;
 }
 
+.genCloudHint {
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
 .genSettingsFoot {
   flex-shrink: 0;
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 10px;
-  margin-top: 10px;
+  margin-top: auto;
+  padding-top: 10px;
 }
 
 .genSettingsFootStart {

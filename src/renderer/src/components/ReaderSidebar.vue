@@ -744,6 +744,7 @@ defineExpose({
           :character-portrait-cache-dir="characterPortraitCacheDir"
           :character-roster="characterRoster"
           :character-book-style="characterBookStyle"
+          :ai-config-sync-nonce="aiAssistantConfigSyncNonce"
           @character-file-meta-patch="emit('characterFileMetaPatch', $event)"
           @update:fullscreen-character-drawer-open="
             emit('update:fullscreenCharacterDrawerOpen', $event)
