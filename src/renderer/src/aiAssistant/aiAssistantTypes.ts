@@ -1,8 +1,17 @@
+export type UiMindmapAttachment = {
+  title: string;
+  markdown: string;
+  stats?: { nodeCount: number; maxDepth: number };
+};
+
 export type UiToolEntry = {
   id: string;
   toolCallId: string;
   name: string;
+  /** 摘要：合法 JSON，长字段已缩短 */
   argsPreview: string;
+  /** 完整入参 JSON 字符串，折叠「请求」区使用 */
+  argsJson: string;
   status: "running" | "done" | "error";
   preview: string;
   full: string;
@@ -11,6 +20,8 @@ export type UiToolEntry = {
   progressTitle?: string;
   /** 工具执行中：折叠正文（可含换行） */
   progressMessage?: string;
+  /** mindmap 工具成功时解析出的导图数据 */
+  mindmap?: UiMindmapAttachment;
 };
 
 /** 思考块：未封存 =「正在思考…」+ 脉冲；封存后 =「思考过程」+ 大脑 */

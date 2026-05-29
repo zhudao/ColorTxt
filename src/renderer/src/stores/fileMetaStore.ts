@@ -109,7 +109,7 @@ function normalizeEditorViewState(
 
 const MAX_HIGHLIGHT_TERM_LEN = 100;
 
-function normalizeHighlightWordsByIndex(
+export function normalizeHighlightWordsByIndex(
   raw: unknown,
 ): HighlightWordsByIndex | undefined {
   if (raw == null || typeof raw !== "object" || Array.isArray(raw)) {

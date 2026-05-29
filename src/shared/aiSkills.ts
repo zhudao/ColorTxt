@@ -227,6 +227,10 @@ export const BUILTIN_AI_SKILLS: readonly AiBuiltinSkill[] = [
 - 关注人物的**动机**和**冲突**
 - 使用**加粗**标注人物名和关键特征
 
+## 思维导图
+
+- 用户需要**人物关系图 / 思维导图 / 角色结构可视化**时：先 **ragSearch**（必要时 **ragContext**），再调用 **mindmap** 工具（勿仅在正文中用文字罗列关系，勿使用 Mermaid mindmap 语法）。
+
 ## 示例
 
 **用户**：分析一下主角

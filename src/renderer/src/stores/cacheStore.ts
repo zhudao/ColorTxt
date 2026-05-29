@@ -15,6 +15,10 @@ import {
 export type { TxtFileItem };
 import { parseHighlightColorsArray } from "../constants/highlightColors";
 import {
+  normalizeHighlightWordsByIndex,
+  type HighlightWordsByIndex,
+} from "./fileMetaStore";
+import {
   parseReaderPaletteOverrides,
   type ReaderSurfacePalette,
 } from "../constants/readerPalette";
@@ -26,6 +30,7 @@ import {
   mergeAiSkillsEnabled,
 } from "@shared/aiSkills";
 import type { VoiceReadSettings } from "../constants/voiceRead";
+import { normalizeCharacterCardTextureEffect } from "@shared/characterCardTextureEffects";
 
 export type PersistedSettingsData = {
   theme?: "vs" | "vs-dark";
@@ -77,6 +82,8 @@ export type PersistedSettingsData = {
   highlightColorsLight?: string[];
   /** 自定义高亮色（暗色主题） */
   highlightColorsDark?: string[];
+  /** 已收藏（全书通用）高亮词，按高亮色索引分桶 */
+  highlightWordsByIndexGlobal?: HighlightWordsByIndex;
   /**
    * 电子书转换输出目录：空字符串表示与源书同目录。
    * 非空时为绝对路径。若设置 JSON 中无此键，应用默认使用 `userData/ConvertedTxt`。
@@ -107,6 +114,8 @@ export type PersistedSettingsData = {
   characterPortraitCacheDir?: string;
   /** 语音朗读（引擎、音色、语速音调、DashScope Key） */
   voiceRead?: Partial<VoiceReadSettings>;
+  /** 角色卡列表纹理/全息效果 */
+  characterCardTextureEffect?: string;
 };
 
 export type PersistedSettingsLoadResult = {
@@ -277,6 +286,10 @@ export function loadPersistedSettingsData(
     const h = parseHighlightColorsArray(obj.highlightColorsDark);
     if (h) data.highlightColorsDark = h;
   }
+  const globalHl = normalizeHighlightWordsByIndex(
+    obj.highlightWordsByIndexGlobal,
+  );
+  if (globalHl) data.highlightWordsByIndexGlobal = globalHl;
   if (typeof obj.ebookConvertOutputDir === "string") {
     data.ebookConvertOutputDir = obj.ebookConvertOutputDir;
   }
@@ -329,6 +342,10 @@ export function loadPersistedSettingsData(
   if (typeof obj.characterPortraitCacheDir === "string") {
     data.characterPortraitCacheDir = obj.characterPortraitCacheDir.trim();
   }
+
+  data.characterCardTextureEffect = normalizeCharacterCardTextureEffect(
+    obj.characterCardTextureEffect,
+  );
 
   if (obj.voiceRead && typeof obj.voiceRead === "object") {
     const vr = obj.voiceRead as Record<string, unknown>;

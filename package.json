@@ -14,7 +14,7 @@
     "typecheck": "vue-tsc --noEmit",
     "lint": "echo \"(no lint configured)\"",
     "release": "electron-vite build && node scripts/prune-pack-deps.mjs && electron-builder --publish always",
-    "postinstall": "electron-rebuild -f -w better-sqlite3"
+    "postinstall": "electron-rebuild -f -w better-sqlite3 && node scripts/patch-nested-sharp-stub.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",
@@ -27,7 +27,10 @@
     "ws": "^8.18.0"
   },
   "overrides": {
-    "sharp": "file:scripts/sharp-pack-stub"
+    "sharp": "file:scripts/sharp-pack-stub",
+    "@huggingface/transformers": {
+      "sharp": "file:scripts/sharp-pack-stub"
+    }
   },
   "devDependencies": {
     "@electron/rebuild": "^3.7.1",
@@ -44,6 +47,8 @@
     "katex": "^0.16.22",
     "marked": "^14.1.3",
     "marked-katex-extension": "^5.1.8",
+    "markmap-lib": "^0.18.12",
+    "markmap-view": "^0.18.12",
     "monaco-editor": "^0.55.1",
     "pako": "^2.1.0",
     "pdfjs-dist": "^5.6.205",

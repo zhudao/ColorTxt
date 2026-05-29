@@ -3,18 +3,23 @@
  * 约定用**全角括号**包裹，避免正文出现形如 `[...](ch=N)` 时被 Markdown 误解析为链接（方括号内不限于序号）。
  */
 
+/** 对用户如何称呼章节（与跳转标记配合） */
+export const AI_USER_VISIBLE_CHAPTER_NAMING =
+  "对用户回答中的章节称呼**只写**工具 JSON 的 **chapterTitle**（如「第三十九回 大战襄阳」），与书中回目一致。**禁止**在对用户可见正文写 chapterIndex、chapterIndex=、`(chapterIndex=数字)`、或将 chapterIndex / chapterIndex+1 换算成「第 N 章」与回目混用。定位「在哪一章」类问题时，直接给出 chapterTitle 即可，**勿**再解释内部序号。";
+
 /** Agent 系统提示中单独成行 */
 export const AI_USER_VISIBLE_CH_REF_RULE =
-  "用户可见正文里的章节跳转**必须且仅能**写 `（ch=N）`：用中文全角圆括号 `（` 与 `）` 包住整段标记，中间为小写半角 `ch`、半角等号 `=`、阿拉伯数字 **N = chapterIndex（全书章节从 0 起的索引，与 ragContext / ragSearch JSON 中的 chapterIndex 一致；首章为 0）**。**多个章节须分别写多个标记**，例如 `（ch=2）（ch=5）`；**禁止**写在一个括号内如 `（ch=2, ch=5）`。**勿用半角括号** `(ch=N)`：若前文有 Markdown 式的 `[…]` 普通文本，再紧跟半角 `(ch=…)` 易被渲染器误认为链接语法。**禁止** `[ch=N]`、`(ch=字母)`、`(ch=字母: N)` 或其它自创格式。工具返回里的章节分隔行（如「第 K 章 · …」）仅供阅读，**不要**照抄其中的数字当作 `（ch=N）` 里的 N（须用 JSON 的 chapterIndex）。";
+  `${AI_USER_VISIBLE_CHAPTER_NAMING} 章节跳转标记（可点击跳转，勿向用户解释其含义）**必须且仅能**写 \`（ch=N）\`：全角括号 \`（\` \`）\` + 半角 \`ch=\` + 数字 **N = chapterIndex（与 rag JSON 一致，从 0 起，仅作跳转锚点）**。**多个章节**写 \`（ch=2）（ch=5）\`，**禁止** \`（ch=2, ch=5）\`、\`（ch=25-26）\`、\`（ch=25提及）\` 等同括号内夹说明（说明写在标记外）。**勿用半角** \`(ch=N)\`（易与 \`[…]\` 连成 Markdown 链接）、**禁止** \`[ch=N]\`、\`(ch=字母: N)\` 等自创格式。正文叙述用 chapterTitle；\`（ch=N）\` 仅附在首次提及处，勿堆砌多个重复标记。`;
 
 /** 非 Agent（经典 RAG）系统提示里较短一句 */
 export const AI_USER_VISIBLE_CH_REF_SHORT =
-  "引用时在正文写 `（ch=N）`（全角括号 + 半角 `ch=` + 数字；**N 为 chapterIndex，从 0 起**）。多章写 `（ch=a）（ch=b）`，勿写 `（ch=a, ch=b）`。不要用半角括号 `(ch=N)`（易与前面的 `[…]` 连成 Markdown 链接误解析）、不要用方括号或其它格式。";
+  `${AI_USER_VISIBLE_CHAPTER_NAMING} 跳转标记写 \`（ch=N）\`（N=chapterIndex，从 0 起，勿向用户解释）。多章写 \`（ch=a）（ch=b）\`。叙述用 chapterTitle，勿写 chapterIndex= 或「第 N 章」换算。`;
 
-/** 工具 mergedMarkdown 里的章节分隔（避免出现 `[ch=`，避免模型模仿）；`chapterIndex` 从 0 起 */
+/** 工具 mergedMarkdown 里的章节分隔：仅用书中 chapterTitle，避免「第 N 章」与 chapterIndex 误导模型 */
 export function formatAiToolChapterHeading(
-  chapterIndex: number,
+  _chapterIndex: number,
   chapterTitle: string,
 ): string {
-  return `第 ${chapterIndex + 1} 章 · ${chapterTitle}`;
+  const t = chapterTitle.trim();
+  return t || "（无标题）";
 }

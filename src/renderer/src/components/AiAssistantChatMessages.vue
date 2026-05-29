@@ -1,9 +1,14 @@
 <script setup lang="ts">
+import { defineAsyncComponent } from "vue";
 import AiAssistantDetailsFold from "./AiAssistantDetailsFold.vue";
 import AiIndexProgressBanner from "./AiIndexProgressBanner.vue";
 import AiMarkdown from "./AiMarkdown.vue";
 import AiTokenUsageBanner from "./AiTokenUsageBanner.vue";
 import AiToolFoldBody from "./AiToolFoldBody.vue";
+
+const AiMindmapView = defineAsyncComponent(
+  () => import("./AiMindmapView.vue"),
+);
 import { vAiStickScroll } from "../directives/aiStickScroll";
 import {
   expandAssistantSegRows,
@@ -11,6 +16,7 @@ import {
 } from "../aiAssistant/aiAssistantSegments";
 import type { UiMsg } from "../aiAssistant/aiAssistantTypes";
 import type { AITokenPricePerMillion } from "@shared/aiTypes";
+import type { Chapter } from "../chapter";
 import { assistantAnswerMdSource } from "../aiAssistant/aiAssistantPlainText";
 import { icons } from "../icons";
 
@@ -19,6 +25,7 @@ defineProps<{
   /** OpenAI 工具名 → 技能展示名（含内置与自定义） */
   skillToolLabels?: Record<string, string>;
   tokenPricePerMillion?: AITokenPricePerMillion | null;
+  chapters?: Chapter[];
 }>();
 
 const emit = defineEmits<{
@@ -144,10 +151,19 @@ function onAiFoldContentPointerDown(ev: PointerEvent) {
                 }}</template>
                 <AiToolFoldBody :tool="row.tool" />
               </AiAssistantDetailsFold>
+              <AiMindmapView
+                v-if="row.rowKind === 'tool' && row.tool.mindmap"
+                :key="row.tool.toolCallId || row.tool.id"
+                :title="row.tool.mindmap.title"
+                :markdown="row.tool.mindmap.markdown"
+                :stats="row.tool.mindmap.stats"
+                :chapters="chapters ?? []"
+              />
             </template>
             <AiMarkdown
               v-if="assistantAnswerMdSource(m).trim() && !m.error"
               :source="assistantAnswerMdSource(m)"
+              :chapters="chapters ?? []"
               @chapter-click="onChClick"
             />
             <div v-if="m.error" class="aiAssistantErr">{{ m.answer }}</div>

@@ -109,7 +109,7 @@ function buildRetrievalContext(hits: AIIndexSearchHit[]): string {
   const parts: string[] = [];
   let total = 0;
   for (const h of hits) {
-    const header = `第 ${h.chapterIndex + 1} 章 · ${h.chapterTitle}\n`;
+    const header = `${h.chapterTitle.trim() || "（无标题）"}\n`;
     const body =
       h.content.length > MAX_SNIPPET_CHARS
         ? `${h.content.slice(0, MAX_SNIPPET_CHARS)}…`

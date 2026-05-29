@@ -41,7 +41,10 @@ import AiAssistantDetailsFold from "./AiAssistantDetailsFold.vue";
 import AiIndexProgressBanner from "./AiIndexProgressBanner.vue";
 import AiTokenUsageBanner from "./AiTokenUsageBanner.vue";
 import AppModal from "./AppModal.vue";
+import type { CharacterCardTextureEffectId } from "@shared/characterCardTextureEffects";
+import { DEFAULT_CHARACTER_CARD_TEXTURE_EFFECT } from "@shared/characterCardTextureEffects";
 import CharacterRosterCard from "./CharacterRosterCard.vue";
+import { pushEscBeforeModal } from "../utils/modalStack";
 import IconButton from "./IconButton.vue";
 import ReaderImageLightbox from "./ReaderImageLightbox.vue";
 import type ReaderMain from "./ReaderMain.vue";
@@ -57,6 +60,7 @@ const props = withDefaults(
     readerMainRef: InstanceType<typeof ReaderMain> | null;
     panelVisible: boolean;
     characterPortraitCacheDir: string;
+    characterCardTextureEffect?: CharacterCardTextureEffectId;
     characterRoster: readonly CharacterRosterEntry[];
     characterBookStyle?: CharacterBookStylePersisted;
     /** 设置「确定」保存后递增，用于同步文生图服务商等运行时配置 */
@@ -70,6 +74,7 @@ const props = withDefaults(
     readerMainRef: null,
     panelVisible: false,
     characterPortraitCacheDir: "",
+    characterCardTextureEffect: DEFAULT_CHARACTER_CARD_TEXTURE_EFFECT,
     characterRoster: () => [],
     characterBookStyle: undefined,
     aiConfigSyncNonce: 0,
@@ -87,6 +92,8 @@ const emit = defineEmits<{
   ];
   /** 全屏：编辑/添加角色抽屉打开时抑制侧栏移出即收起 */
   "update:fullscreenCharacterDrawerOpen": [open: boolean];
+  /** 全屏：角色卡放大预览打开时抑制侧栏移出即收起 */
+  "update:fullscreenCharacterCardZoomOpen": [open: boolean];
 }>();
 
 const embeddingEnabled = ref(false);
@@ -155,6 +162,31 @@ const isRetrieveIndexBuilding = computed(() =>
 const generateOpen = ref(false);
 const genTargetId = ref<string | null>(null);
 const portraitLightboxSrc = ref("");
+/** 原位放大中的角色卡 id（同一张 DOM，非 overlay 副本） */
+const popoverCardId = ref<string | null>(null);
+
+watch(
+  () => Boolean(popoverCardId.value),
+  (v) => {
+    emit("update:fullscreenCharacterCardZoomOpen", v);
+  },
+  { immediate: true },
+);
+
+let removePopoverEsc: (() => void) | null = null;
+
+watch(popoverCardId, (id, prevId) => {
+  removePopoverEsc?.();
+  removePopoverEsc = null;
+  if (!id && prevId) {
+    flipped[prevId] = false;
+  }
+  if (!id) return;
+  removePopoverEsc = pushEscBeforeModal(() => {
+    popoverCardId.value = null;
+  });
+});
+
 const genStyleZh = ref("");
 const genPromptZh = ref("");
 const genNegativeZh = ref("");
@@ -749,10 +781,14 @@ function openEditSlide(entry: CharacterRosterEntry) {
   retrieveEverThisDrawer.value = false;
 }
 
-function openPortraitLightbox(entry: CharacterRosterEntry) {
+function toggleCharacterCardPopover(entry: CharacterRosterEntry) {
   const url = portraitUrlById[entry.id];
   if (!url) return;
-  portraitLightboxSrc.value = url;
+  if (popoverCardId.value === entry.id) {
+    popoverCardId.value = null;
+    return;
+  }
+  popoverCardId.value = entry.id;
 }
 
 function openPortraitLightboxFromUrl(url: string | null | undefined) {
@@ -1341,6 +1377,8 @@ async function onClearAllCharacters() {
 }
 
 onBeforeUnmount(() => {
+  removePopoverEsc?.();
+  removePopoverEsc = null;
   abortRetrieveIndexBuild();
   teardownCardGridResizeObserver();
 });
@@ -1364,9 +1402,11 @@ onBeforeUnmount(() => {
                 :portrait-url="portraitUrlById[row.id] ?? null"
                 :flipped="!!flipped[row.id]"
                 :name-zoom="rosterNameZoom"
+                :texture-effect="characterCardTextureEffect"
+                :popover-open="popoverCardId === row.id"
                 @toggle-flip="toggleFlip(row.id)"
                 @edit="openEditSlide(row)"
-                @view-portrait="openPortraitLightbox(row)"
+                @view-portrait="toggleCharacterCardPopover(row)"
               />
             </div>
           </div>
@@ -1379,7 +1419,7 @@ onBeforeUnmount(() => {
         <div class="sidebarTabFooterEnd">
           <button
             type="button"
-            class="link primary hoverMode sidebarTabFooterAction"
+            class="link hoverMode sidebarTabFooterAction"
             @click="openAddSlide"
           >
             添加角色
@@ -1653,7 +1693,7 @@ onBeforeUnmount(() => {
           <div class="drawerFootEnd">
             <button
               type="button"
-              class="link danger hoverMode drawerFootAction"
+              class="link hoverMode drawerFootAction"
               :disabled="extracting"
               @click="closeSlide"
             >
@@ -1661,7 +1701,7 @@ onBeforeUnmount(() => {
             </button>
             <button
               type="button"
-              class="link primary hoverMode drawerFootAction"
+              class="link success drawerFootAction"
               :disabled="extracting || !draftDisplayName.trim()"
               @click="onSaveSlide"
             >
@@ -1783,6 +1823,14 @@ onBeforeUnmount(() => {
     </AppModal>
 
     <ReaderImageLightbox v-model="portraitLightboxSrc" />
+    <Teleport to="body">
+      <div
+        v-if="popoverCardId"
+        class="charCardPopoverBackdrop"
+        aria-hidden="true"
+        @click="popoverCardId = null"
+      />
+    </Teleport>
   </div>
 </template>
 
@@ -1812,10 +1860,12 @@ onBeforeUnmount(() => {
 
 .characterContentColumn {
   flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--bg);
+  overflow-x: hidden;
 }
 
 .emptySlot {
@@ -1828,9 +1878,11 @@ onBeforeUnmount(() => {
 
 .characterMainScroll {
   flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
-  overflow: auto;
-  padding: 10px 10px 8px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 10px;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -1838,9 +1890,17 @@ onBeforeUnmount(() => {
 
 .cardGrid {
   display: grid;
+  min-width: 0;
+  max-width: 100%;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   gap: 10px;
   align-items: start;
+}
+
+.cardGrid:has(.cardShell--popover) .cardShell:not(.cardShell--popover) {
+  opacity: 0.42;
+  transition: opacity 0.28s ease;
+  pointer-events: none;
 }
 
 .empty {
@@ -2308,5 +2368,14 @@ onBeforeUnmount(() => {
 .drawerBody .charRetrieveTokenUsage,
 .drawerBody .charRetrieveIndexProgress {
   margin: 0;
+}
+</style>
+
+<style>
+.charCardPopoverBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 12000;
+  background: color-mix(in srgb, #000 58%, transparent);
 }
 </style>

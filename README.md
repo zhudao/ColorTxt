@@ -153,3 +153,4 @@ OpenAI 接口拼接方式：
 - 基于 [libmspack](https://github.com/kyz/libmspack) 移植了一套 JavaScript 实现，以支持对 `.chm` 格式的解析
 - 其他电子书格式的解析，主要参考 [foliate-js](https://github.com/johnfactotum/foliate-js) 的实现
 - AI 聊天助手和语音朗读的基础功能，主要参考了 [ReadAny](https://github.com/codedogQBY/ReadAny) 的实现
+- 角色卡 3D 卡片效果的实现思路及部分样式、贴图资源参考 [pokemon-cards-css](https://github.com/simeydotme/pokemon-cards-css)

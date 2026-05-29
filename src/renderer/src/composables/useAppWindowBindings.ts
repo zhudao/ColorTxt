@@ -5,6 +5,7 @@ import {
   collectFsPathsFromDataTransfer,
   dataTransferLikelyHasExternalFiles,
 } from "../utils/dragDropFsPaths";
+import { formatTextEncodingLabel } from "@shared/textEncodingDisplay";
 import { appAlert } from "../services/appDialog";
 import {
   bindAppShortcuts,
@@ -293,7 +294,9 @@ export function useAppWindowBindings(deps: {
         if (!streamMatchesCurrent(payload)) return;
         deps.activeStreamRequestId.value = payload.requestId;
         deps.activeStreamFilePath.value = payload.filePath;
-        deps.fileEncoding.value = payload.encoding || "-";
+        deps.fileEncoding.value = formatTextEncodingLabel(
+          payload.encoding || "-",
+        );
         const total = payload.totalBytes;
         deps.loadingProgressPercent.value = total > 0 ? 0 : null;
       }),

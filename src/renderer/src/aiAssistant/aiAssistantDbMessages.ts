@@ -1,5 +1,11 @@
 import type { AIChatToolCall } from "@shared/aiTypes";
+import { inferToolResultOk } from "@shared/aiToolResult";
+import {
+  normalizeToolArgumentsDisplayJson,
+  summarizeToolArgumentsJson,
+} from "@shared/toolArgumentsDisplay";
 import type { AITokenUsageTotals } from "@shared/aiTokenUsage";
+import { parseMindmapToolResult } from "./parseMindmapToolResult";
 import type {
   DbMsgRow,
   UiAssistantSegment,
@@ -7,21 +13,16 @@ import type {
   UiToolEntry,
 } from "./aiAssistantTypes";
 
-/** 与主进程 `previewJson(args, 400)` 一致，用于历史会话还原工具请求摘要 */
-function argsPreviewFromStoredArguments(
-  argumentsJson: string,
-  maxLen = 400,
-): string {
-  const raw = argumentsJson ?? "";
-  try {
-    const obj = JSON.parse(raw || "{}") as unknown;
-    const s = JSON.stringify(obj);
-    return s.length <= maxLen ? s : `${s.slice(0, maxLen)}…`;
-  } catch {
-    const t = raw.trim();
-    if (!t) return "";
-    return t.length <= maxLen ? t : `${t.slice(0, maxLen)}…`;
-  }
+function argsForToolCallId(
+  calls: AIChatToolCall[],
+  toolCallId: string,
+): { argsPreview: string; argsJson: string } {
+  const tc = calls.find((c) => c.id === toolCallId);
+  const raw = tc?.function.arguments ?? "";
+  return {
+    argsPreview: summarizeToolArgumentsJson(raw),
+    argsJson: normalizeToolArgumentsDisplayJson(raw),
+  };
 }
 
 function parseStoredToolCalls(
@@ -52,15 +53,6 @@ function parseStoredToolCalls(
   } catch {
     return [];
   }
-}
-
-function argsPreviewForToolCallId(
-  calls: AIChatToolCall[],
-  toolCallId: string,
-): string {
-  const tc = calls.find((c) => c.id === toolCallId);
-  if (!tc) return "";
-  return argsPreviewFromStoredArguments(tc.function.arguments);
 }
 
 function parsePayloadReasoning(payload: string | null | undefined): string {
@@ -234,15 +226,23 @@ export function rowsToUiMessages(rows: DbMsgRow[]): UiMsg[] {
                 ? `${row.content.slice(0, 360)}…`
                 : row.content;
             const tcId = row.toolCallId ?? "";
+            const toolName = (row.toolName ?? "tool").trim() || "tool";
+            const mindmap =
+              toolName === "mindmap"
+                ? parseMindmapToolResult(row.content) ?? undefined
+                : undefined;
+            const toolArgs = argsForToolCallId(pendingToolCalls, tcId);
             tools.push({
               id: row.id,
               toolCallId: tcId,
-              name: (row.toolName ?? "tool").trim() || "tool",
-              argsPreview: argsPreviewForToolCallId(pendingToolCalls, tcId),
-              status: "done",
+              name: toolName,
+              argsPreview: toolArgs.argsPreview,
+              argsJson: toolArgs.argsJson,
+              status: inferToolResultOk(row.content) ? "done" : "error",
               preview: snippetPreview,
               full: row.content,
               open: false,
+              mindmap,
             });
             segments.push({ kind: "toolRef", toolCallId: tcId });
             j++;

@@ -3,8 +3,10 @@
 export type ToolFoldBodySource = {
   full: string;
   preview: string;
-  /** 工具入参摘要（多为单行 JSON），展示在折叠正文「请求」区 */
+  /** 列表/标题用入参摘要 */
   argsPreview?: string;
+  /** 完整入参 JSON，折叠「请求」区优先使用 */
+  argsJson?: string;
   status?: "running" | "done" | "error";
   progressMessage?: string;
 };
@@ -124,11 +126,15 @@ function toolBodyDisplayHtml(raw: string): { html: string; isJson: boolean } {
   }
 }
 
-export function toolFoldArgsRendered(
-  argsPreview: string | undefined,
-): { html: string; isJson: boolean } {
-  const raw = (argsPreview ?? "").trim();
+export function toolFoldArgsRendered(tool: {
+  argsJson?: string;
+  argsPreview?: string;
+}): { html: string; isJson: boolean } {
+  const raw = (tool.argsJson ?? tool.argsPreview ?? "").trim();
   if (!raw) return { html: "", isJson: false };
+  if (raw === "（与上一轮相同，已跳过执行）") {
+    return { html: escapeHtml(raw), isJson: false };
+  }
   return toolBodyDisplayHtml(raw);
 }
 

@@ -61,6 +61,10 @@ export function mergeAiConfigWithDefaults(raw: unknown): AIConfig {
   if (typeof o.showTokenUsage === "boolean") {
     base.showTokenUsage = o.showTokenUsage;
   }
+  if (typeof o.autoMindmapOnSummaryAndCharacters === "boolean") {
+    base.autoMindmapOnSummaryAndCharacters =
+      o.autoMindmapOnSummaryAndCharacters;
+  }
   base.txt2img = normalizeTxt2ImgConfig(o.txt2img);
   return base;
 }

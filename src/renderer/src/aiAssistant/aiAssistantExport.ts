@@ -8,7 +8,8 @@ import {
   toolDisplayLabel,
   toolEntryByCallId,
 } from "./aiAssistantSegments";
-import { normalizeAiChapterRefMarkers } from "../utils/aiMarkdownChapterRef";
+import type { Chapter } from "../chapter";
+import { formatAiAssistantAnswerForUser } from "../utils/aiMarkdownChapterRef";
 
 export function resolveExportThreadTitle(
   threadId: string | null,
@@ -65,6 +66,7 @@ export function buildAssistantChatExportMarkdown(
   title: string,
   includeReasoningAndTools = false,
   skillToolLabels?: Record<string, string>,
+  chapters: readonly Chapter[] = [],
 ): string {
   const lines: string[] = [`# ${title}`, ""];
   for (const m of messages) {
@@ -82,15 +84,28 @@ export function buildAssistantChatExportMarkdown(
     if (includeReasoningAndTools) {
       for (const seg of m.segments) {
         if (seg.kind === "think" && seg.text.trim()) {
-          lines.push("### 思考过程", "", seg.text.trim(), "");
+          lines.push(
+            "### 思考过程",
+            "",
+            formatAiAssistantAnswerForUser(seg.text.trim(), chapters),
+            "",
+          );
         } else if (seg.kind === "toolRef") {
           const t = toolEntryByCallId(m, seg.toolCallId);
           if (!t) continue;
           const body = (t.full || t.preview).trim();
+          const reqJson = (t.argsJson || t.argsPreview).trim();
           lines.push(
             `### 工具：${toolDisplayLabel(t.name, skillToolLabels)}`,
             "",
             t.argsPreview ? `参数摘要：${t.argsPreview}` : "",
+            "",
+          );
+          if (reqJson && reqJson !== t.argsPreview) {
+            lines.push("完整请求：", "", "```json", reqJson, "```", "");
+          }
+          lines.push(
+            "结果：",
             "",
             "```",
             body || "（无正文）",
@@ -100,7 +115,7 @@ export function buildAssistantChatExportMarkdown(
         }
       }
     }
-    const ansMd = normalizeAiChapterRefMarkers(m.answer.trim());
+    const ansMd = formatAiAssistantAnswerForUser(m.answer.trim(), chapters);
     if (ansMd) {
       if (includeReasoningAndTools) {
         lines.push("### 回答", "", ansMd, "");
@@ -131,6 +146,7 @@ export function buildAssistantChatExportJson(
   title: string,
   includeReasoningAndTools = false,
   skillToolLabels?: Record<string, string>,
+  chapters: readonly Chapter[] = [],
 ): string {
   const exportedAt = new Date().toISOString();
   const payload = {
@@ -155,7 +171,7 @@ export function buildAssistantChatExportJson(
         id: m.id,
         role: m.role,
         aborted: Boolean(m.aborted),
-        answer: normalizeAiChapterRefMarkers(m.answer.trim()),
+        answer: formatAiAssistantAnswerForUser(m.answer.trim(), chapters),
         createdAt: m.createdAt ?? Date.now(),
       };
       if (!includeReasoningAndTools) {
@@ -174,9 +190,11 @@ export function buildAssistantChatExportJson(
           name: t.name,
           displayName: toolDisplayLabel(t.name, skillToolLabels),
           argsPreview: t.argsPreview,
+          argsJson: t.argsJson,
           preview: t.preview,
           full: t.full,
           status: t.status,
+          ...(t.mindmap ? { mindmap: t.mindmap } : {}),
         })),
       };
     }),

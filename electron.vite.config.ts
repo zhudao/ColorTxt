@@ -155,6 +155,9 @@ export default defineConfig({
         },
       }),
     ],
+    optimizeDeps: {
+      include: ["markmap-lib", "markmap-view"],
+    },
     build: {
       outDir: resolve(__electronViteConfigDir, "dist/renderer"),
       rollupOptions: {

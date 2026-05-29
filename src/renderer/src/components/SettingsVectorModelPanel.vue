@@ -741,7 +741,7 @@ async function runEmbedConnectionTest(): Promise<ConnectionTestResult> {
             />
           </div>
           <p class="settingsHint">
-            检索原文时，从全书语义索引中取回的相关性最高的段落数量。<br />数值越大，参考内容越多，但回答可能更慢；一般
+            检索原文时，从全书语义索引中取回的相关性最高的片段数量。<br />数值越大，参考内容越多，但回答也可能越慢；一般
             3～8 条即可。
           </p>
         </div>

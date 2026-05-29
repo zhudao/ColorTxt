@@ -324,13 +324,27 @@ export interface AIConfig {
   quickQuestions: string[];
   /** 侧栏展示 Token 消耗信息；关闭后隐藏价格相关设置 */
   showTokenUsage: boolean;
+  /**
+   * 内容概括/人物关系类问题是否引导 Agent 自动调用 mindmap；默认 true。
+   * 关闭后仅在用户明确提到「思维导图/导图」等时注入出图提示。
+   */
+  autoMindmapOnSummaryAndCharacters: boolean;
   txt2img: AITxt2ImgConfig;
+}
+
+/** mindmap 工具返回（持久化在 tool 消息 content） */
+export interface AIMindmapToolResult {
+  type: "mindmap";
+  title: string;
+  markdown: string;
+  stats?: { nodeCount: number; maxDepth: number };
 }
 
 /** 内置默认快速提问（配置缺失或清空后回退） */
 export const DEFAULT_AI_QUICK_QUESTIONS: readonly string[] = [
   "这章讲了什么",
   "本书的主角与重要配角都有谁",
+  "概括本书内容",
 ];
 
 /** 归一化磁盘 / IPC 传入的快速提问列表 */
@@ -443,7 +457,10 @@ export type AIAgentRendererEvent =
       requestId: number;
       toolCallId: string;
       name: string;
+      /** 列表/标题用摘要（合法 JSON，大字段已缩短） */
       argsPreview: string;
+      /** 完整 tool arguments 原文，供折叠「请求」区 JSON 格式化 */
+      argsJson: string;
     }
   | {
       type: "tool_progress";
@@ -558,6 +575,34 @@ export const AI_AGENT_TOOLS: Array<{
           },
         },
         required: ["reasoning", "characterName"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "mindmap",
+      description:
+        "生成交互式思维导图（markmap）。用于知识图、章节/全书概括、人物关系等结构化可视化。markdown 须为标准 Markdown 标题层级（# ## ### 与 - 列表），禁止使用 Mermaid 的 mindmap 语法。须在先完成 ragSearch/ragContext 后再调用。",
+      parameters: {
+        type: "object",
+        properties: {
+          reasoning: {
+            type: "string",
+            description: "简要说明为何调用本工具",
+          },
+          title: {
+            type: "string",
+            description: "思维导图标题",
+          },
+          markdown: {
+            type: "string",
+            description:
+              "导图内容：# 根节点，## 主枝，### 子枝，- 叶子。示例：\n# 书名\n## 主线\n### 事件A\n- 细节",
+          },
+        },
+        required: ["reasoning", "title", "markdown"],
         additionalProperties: false,
       },
     },
@@ -691,5 +736,6 @@ export const defaultAIConfig: AIConfig = {
   ragTopK: 5,
   quickQuestions: [...DEFAULT_AI_QUICK_QUESTIONS],
   showTokenUsage: true,
+  autoMindmapOnSummaryAndCharacters: true,
   txt2img: structuredClone(defaultTxt2ImgConfig),
 };

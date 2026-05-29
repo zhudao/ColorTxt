@@ -25,6 +25,9 @@ import type {
   CharacterBookStylePersisted,
   CharacterRosterEntry,
 } from "@shared/characterTypes";
+import type { CharacterCardTextureEffectId } from "@shared/characterCardTextureEffects";
+import { DEFAULT_CHARACTER_CARD_TEXTURE_EFFECT } from "@shared/characterCardTextureEffects";
+import { formatTextEncodingLabel } from "@shared/textEncodingDisplay";
 import {
   mergeAiCustomSkills,
   mergeAiSkillOverrides,
@@ -60,7 +63,15 @@ import {
   removeHighlightTermFromFile,
   upsertFileMetaRecord,
   type FileMetaRecord,
+  type HighlightWordsByIndex,
 } from "./stores/fileMetaStore";
+import {
+  assignHighlightTermToColorMap,
+  buildHighlightListTerms,
+  mergeHighlightWordsByIndex,
+  removeHighlightTermFromMap,
+  termExistsInHighlightMap,
+} from "./utils/highlightWords";
 import {
   applyReaderSurfaceToDocument,
   defaultCompressBlankKeepOneBlank,
@@ -145,11 +156,13 @@ const fullscreenFileListPopoversOpen = ref(false);
 const fullscreenAiAssistantPopoversOpen = ref(false);
 /** 角色卡：编辑/添加角色抽屉打开 */
 const fullscreenCharacterDrawerOpen = ref(false);
+const fullscreenCharacterPopoversOpen = ref(false);
 const fullscreenSidebarPopoversSuppressCollapse = computed(
   () =>
     fullscreenFileListPopoversOpen.value ||
     fullscreenAiAssistantPopoversOpen.value ||
-    fullscreenCharacterDrawerOpen.value,
+    fullscreenCharacterDrawerOpen.value ||
+    fullscreenCharacterPopoversOpen.value,
 );
 /** 全屏下打开设置/配色弹框期间，禁用左缘感应自动唤起侧栏 */
 const suppressFullscreenSidebarHover = ref(false);
@@ -437,6 +450,9 @@ const ebookConvertOutputDir = ref(
 );
 /** 角色立绘缓存根目录（绝对路径）；启动后由持久化或默认 userData/CharacterPortrait 填充 */
 const characterPortraitCacheDir = ref("");
+const characterCardTextureEffect = ref<CharacterCardTextureEffectId>(
+  DEFAULT_CHARACTER_CARD_TEXTURE_EFFECT,
+);
 /** 技能开关（设置 → 技能） */
 const aiSkillsEnabled = ref<Record<string, boolean>>(
   mergeAiSkillsEnabled(undefined, []),
@@ -453,6 +469,10 @@ const readerPaletteOverridesDark = ref<Partial<ReaderSurfacePalette>>({});
 
 const highlightColorsLight = ref<string[]>([...DEFAULT_HIGHLIGHT_COLORS_LIGHT]);
 const highlightColorsDark = ref<string[]>([...DEFAULT_HIGHLIGHT_COLORS_DARK]);
+/** 已收藏（全书通用）高亮词 */
+const highlightWordsByIndexGlobal = ref<HighlightWordsByIndex | undefined>(
+  undefined,
+);
 
 const readerSurfaceLight = computed(() =>
   mergeReaderSurfacePalette(
@@ -512,27 +532,25 @@ function onCharacterFileMetaPatch(payload: {
   persistFileMeta();
 }
 
-const currentFileHighlightTerms = computed<
-  Array<{ text: string; color: string; colorIndex: number }>
->(() => {
-  const groups = currentFileHighlightWords.value;
-  if (!groups) return [];
+const mergedHighlightWordsForReader = computed(() =>
+  mergeHighlightWordsByIndex(
+    highlightWordsByIndexGlobal.value,
+    currentFileHighlightWords.value,
+  ),
+);
+
+const currentFileHighlightTerms = computed(() => {
   const colors = highlightColorsForReader.value;
   const bodyText =
     currentTheme.value === "vs"
       ? readerSurfaceLight.value.bodyText
       : readerSurfaceDark.value.bodyText;
-  const out: Array<{ text: string; color: string; colorIndex: number }> = [];
-  for (const [idxKey, terms] of Object.entries(groups)) {
-    const idx = Number.parseInt(idxKey, 10);
-    if (!Number.isFinite(idx) || idx < 0) continue;
-    const color = idx < colors.length ? colors[idx] : bodyText;
-    for (const text of terms) {
-      if (!text) continue;
-      out.push({ text, color, colorIndex: idx });
-    }
-  }
-  return out;
+  return buildHighlightListTerms(
+    highlightWordsByIndexGlobal.value,
+    currentFileHighlightWords.value,
+    colors,
+    bodyText,
+  );
 });
 
 const readerPaneWrapRef = useTemplateRef<HTMLElement>("readerPaneWrapRef");
@@ -630,13 +648,6 @@ function normalizeIpcEncoding(raw: string): string {
   return raw.trim() || "utf8";
 }
 
-function encodingLabelForFooter(ipcEncoding: string): string {
-  const n = normalizeIpcEncoding(ipcEncoding);
-  if (n === "utf8") return "UTF-8";
-  if (n === "gb2312") return "GB2312";
-  return ipcEncoding.trim().toUpperCase() || "-";
-}
-
 /** 写入磁盘：编辑模式用 Monaco 全文；只读且开压缩空行/行首缩进时用流管道物理行原文 */
 function textForReaderDiskSave(): string {
   if (readerEditMode.value) {
@@ -661,7 +672,7 @@ async function saveReaderBufferWithIpcEncoding(
     return false;
   }
   readerSaveEncoding.value = normalized;
-  fileEncoding.value = encodingLabelForFooter(normalized);
+  fileEncoding.value = formatTextEncodingLabel(normalized);
   readerRef.value?.markReaderEditSaved?.();
   readerEditorDirty.value = false;
   return true;
@@ -775,8 +786,10 @@ const persistence = useAppPersistence({
   readerPaletteOverridesDark,
   highlightColorsLight,
   highlightColorsDark,
+  highlightWordsByIndexGlobal,
   ebookConvertOutputDir,
   characterPortraitCacheDir,
+  characterCardTextureEffect,
   fileCategory,
   fileSort,
   fileCategoryCatalog,
@@ -814,6 +827,7 @@ watch(fileListEditing, (editing, wasEditing) => {
 
 watch(aiAssistantDeepThinking, () => persistSettings());
 watch(aiAssistantSpoilerSafe, () => persistSettings());
+watch(characterCardTextureEffect, () => persistSettings());
 watch(
   voiceReadSettings,
   () => persistSettings(),
@@ -1608,7 +1622,18 @@ function onAddHighlightTerm(payload: { text: string; colorIndex: number }) {
   persistFileMeta();
 }
 
-function onRemoveHighlightTerm(payload: { text: string }) {
+function onRemoveHighlightTerm(payload: {
+  text: string;
+  scope?: "global" | "book";
+}) {
+  if (payload.scope === "global") {
+    highlightWordsByIndexGlobal.value = removeHighlightTermFromMap(
+      highlightWordsByIndexGlobal.value,
+      payload.text,
+    );
+    persistSettings();
+    return;
+  }
   const path = currentFile.value;
   if (!path) return;
   fileMetaRecords.value = removeHighlightTermFromFile(
@@ -1617,6 +1642,49 @@ function onRemoveHighlightTerm(payload: { text: string }) {
     payload.text,
   );
   persistFileMeta();
+}
+
+function onFavoriteHighlightTerm(payload: { text: string; colorIndex: number }) {
+  const path = currentFile.value;
+  if (!path) return;
+  fileMetaRecords.value = removeHighlightTermFromFile(
+    fileMetaRecords.value,
+    path,
+    payload.text,
+  );
+  highlightWordsByIndexGlobal.value = assignHighlightTermToColorMap(
+    highlightWordsByIndexGlobal.value,
+    payload.colorIndex,
+    payload.text,
+  );
+  persistFileMeta();
+  persistSettings();
+}
+
+function onUnfavoriteHighlightTerm(payload: {
+  text: string;
+  colorIndex: number;
+}) {
+  const term = payload.text.trim();
+  highlightWordsByIndexGlobal.value = removeHighlightTermFromMap(
+    highlightWordsByIndexGlobal.value,
+    term,
+  );
+  const path = currentFile.value;
+  const bookHas = termExistsInHighlightMap(
+    currentFileHighlightWords.value,
+    term,
+  );
+  if (!bookHas && path) {
+    fileMetaRecords.value = assignHighlightTermToColorForFile(
+      fileMetaRecords.value,
+      path,
+      payload.colorIndex,
+      term,
+    );
+    persistFileMeta();
+  }
+  persistSettings();
 }
 
 async function clearCurrentFileHighlightTerms() {
@@ -1628,7 +1696,7 @@ async function clearCurrentFileHighlightTerms() {
     buttons: ["取消", "清空"],
     defaultId: 1,
     cancelId: 0,
-    message: "是否要清空当前文件的所有高亮词？",
+    message: "是否要清空当前文件的所有本书高亮词？",
     detail: "此操作不可逆！",
     noLink: true,
   });
@@ -2262,6 +2330,7 @@ useAppShellThemeWatch({
           :ai-assistant-tab-visible="aiFeaturesEnabled"
           :character-portrait-tab-visible="txt2imgFeatureEnabled"
           :character-portrait-cache-dir="characterPortraitCacheDir"
+          v-model:character-card-texture-effect="characterCardTextureEffect"
           :character-roster="currentFileCharacterRoster"
           :character-book-style="currentFileCharacterBookStyle"
           v-model:deep-thinking="aiAssistantDeepThinking"
@@ -2299,7 +2368,9 @@ useAppShellThemeWatch({
           @update:search-whole-word="searchWholeWord = $event"
           @update:search-use-regex="searchUseRegex = $event"
           @jump-to-search-result="onJumpToSearchResult"
-          @remove-highlight-term="onRemoveHighlightTerm({ text: $event })"
+          @remove-highlight-term="onRemoveHighlightTerm"
+          @favorite-highlight-term="onFavoriteHighlightTerm"
+          @unfavorite-highlight-term="onUnfavoriteHighlightTerm"
           @clear-highlights="clearCurrentFileHighlightTerms"
           @character-file-meta-patch="onCharacterFileMetaPatch"
           @persist-ui="onPersistUi"
@@ -2315,6 +2386,9 @@ useAppShellThemeWatch({
           "
           @update:fullscreen-character-drawer-open="
             fullscreenCharacterDrawerOpen = $event
+          "
+          @update:fullscreen-character-popovers-open="
+            fullscreenCharacterPopoversOpen = $event
           "
           @update:file-list-editing="fileListEditing = $event"
           @request-expand-panel="showSidebar = true"
@@ -2369,7 +2443,8 @@ useAppShellThemeWatch({
           :reader-surface-light="readerSurfaceLight"
           :reader-surface-dark="readerSurfaceDark"
           :highlight-colors="highlightColorsForReader"
-          :highlight-words-by-index="currentFileHighlightWords"
+          :highlight-words-by-index="mergedHighlightWordsForReader"
+          :highlight-words-by-index-book-only="currentFileHighlightWords"
           :reader-file-path="currentFile"
           :ebook-anchor-physical-to-display="
             stream.physicalLineToDisplayForReader

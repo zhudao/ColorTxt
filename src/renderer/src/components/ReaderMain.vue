@@ -202,8 +202,10 @@ const props = withDefaults(
     readerSurfaceDark?: ReaderSurfacePalette;
     /** 当前主题下的高亮色列表（与设置中亮/暗数组之一对应） */
     highlightColors?: string[];
-    /** 当前打开文件的自定义高亮词（来自 file.meta） */
+    /** 合并后的高亮词（全局 + 本书；上色时本书同色词优先） */
     highlightWordsByIndex?: HighlightWordsByIndex;
+    /** 仅本书高亮词（选区浮层判定「是否已是高亮词」） */
+    highlightWordsByIndexBookOnly?: HighlightWordsByIndex;
     /** 已打开文件路径；为空时不显示选区高亮入口 */
     readerFilePath?: string | null;
     /** 电子书 `<<ID>>` / `<<A>>`：物理行号 → Monaco 显示行（与流式滤空一致） */
@@ -249,6 +251,7 @@ const props = withDefaults(
     readerSurfaceDark: () => ({ ...defaultReaderPaletteDark }),
     highlightColors: () => [...DEFAULT_HIGHLIGHT_COLORS_LIGHT],
     highlightWordsByIndex: undefined,
+    highlightWordsByIndexBookOnly: undefined,
     readerFilePath: null,
     ebookAnchorPhysicalToDisplay: undefined,
     ebookDisplayLineToPhysical: undefined,
@@ -572,7 +575,7 @@ function applyHighlightVerticalPlacement(
 }
 
 function findStoredHighlightColorIndex(term: string): number | null {
-  const map = props.highlightWordsByIndex;
+  const map = props.highlightWordsByIndexBookOnly;
   if (!map || !term) return null;
   for (const [k, words] of Object.entries(map)) {
     if (words.some((w) => w === term)) {

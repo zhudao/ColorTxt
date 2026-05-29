@@ -11,9 +11,7 @@ import {
 
 const props = defineProps<{ tool: ToolFoldBodySource }>();
 
-const argsRendered = computed(() =>
-  toolFoldArgsRendered(props.tool.argsPreview),
-);
+const argsRendered = computed(() => toolFoldArgsRendered(props.tool));
 
 const rendered = computed(() => toolFoldBodyRendered(props.tool));
 </script>

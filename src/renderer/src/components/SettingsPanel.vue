@@ -285,6 +285,7 @@ function resetAiDraft() {
     chat,
     quickQuestions: structuredClone(def.quickQuestions),
     showTokenUsage: def.showTokenUsage,
+    autoMindmapOnSummaryAndCharacters: def.autoMindmapOnSummaryAndCharacters,
   };
 }
 

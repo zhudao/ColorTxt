@@ -1,23 +1,32 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, withDefaults } from "vue";
 import "katex/dist/katex.min.css";
 import { marked } from "../utils/aiMarkdownMarkedSetup";
 import { ensureSpacesAroundMarkdownStrongPairs } from "../utils/aiMarkdownMarkedPrep";
+import type { Chapter } from "../chapter";
 import {
   chapterNumStrFromMarkerMatch,
+  chapterRefButtonLabel,
   createAiChapterMarkerRegex,
-  normalizeCompoundAiChapterMarkers,
+  formatAiAssistantAnswerForDisplay,
 } from "../utils/aiMarkdownChapterRef";
 
-const props = defineProps<{
-  source: string;
-}>();
+const props = withDefaults(
+  defineProps<{
+    source: string;
+    chapters?: readonly Chapter[];
+  }>(),
+  { chapters: () => [] },
+);
 
 /**
  * 在 marked 输出 HTML 之后，于 `pre` / `code` 外的文本节点中把
- * `（ch=N）` 中 N = chapterIndex（从 0 起）；按钮展示为「第 N+1 章」。仍兼容半角 `(ch=N)`、`[ch=N]`、`(ch=标识: N)` 等旧输出。
+ * `（ch=N）` 中 N = chapterIndex（从 0 起）；按钮展示为书中章节名。先归一化 `（ch=a-b）`、`（ch=N后缀）` 等变体，并兼容半角括号、`[ch=N]` 等旧输出。
  */
-function injectChapterRefButtons(html: string): string {
+function injectChapterRefButtons(
+  html: string,
+  chapters: readonly Chapter[],
+): string {
   const parser = new DOMParser();
   const doc = parser.parseFromString(
     `<div class="ai-md-wrap">${html}</div>`,
@@ -43,8 +52,11 @@ function injectChapterRefButtons(html: string): string {
       btn.type = "button";
       btn.className = "aiChRef";
       btn.setAttribute("data-ch", num);
-      btn.textContent =
-        Number.isFinite(idx) && idx >= 0 ? `第 ${idx + 1} 章` : `章 ${num}`;
+      if (Number.isFinite(idx) && idx >= 0) {
+        btn.textContent = chapterRefButtonLabel(idx, chapters);
+      } else {
+        btn.textContent = `章 ${num}`;
+      }
       frag.appendChild(btn);
       last = m.index + m[0].length;
     }
@@ -69,11 +81,10 @@ function injectChapterRefButtons(html: string): string {
 }
 
 const html = computed(() => {
-  let md = props.source;
-  md = normalizeCompoundAiChapterMarkers(md);
+  let md = formatAiAssistantAnswerForDisplay(props.source);
   md = ensureSpacesAroundMarkdownStrongPairs(md);
   const parsed = marked.parse(md, { breaks: true, async: false }) as string;
-  return injectChapterRefButtons(parsed);
+  return injectChapterRefButtons(parsed, props.chapters);
 });
 
 const emit = defineEmits<{
