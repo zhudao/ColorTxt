@@ -39,6 +39,15 @@ import {
   resolveInitialReaderSidebarTab,
   type InitialWindowLoadIntent,
 } from "./reader/initialSidebarTab";
+import {
+  WORDCLOUD_DEFAULT_ANGLE_MODE,
+  WORDCLOUD_DEFAULT_FONT_FAMILY,
+  type WordcloudAngleMode,
+} from "./constants/wordcloudUi";
+import {
+  WORDCLOUD_DEFAULT_PALETTE_ID,
+  type WordcloudPaletteId,
+} from "./constants/wordcloudPalettes";
 import { useAppBookmarkPins } from "./composables/useAppBookmarkPins";
 import { useAppChapterListSync } from "./composables/useAppChapterListSync";
 import { useAppChapterNavigation } from "./composables/useAppChapterNavigation";
@@ -267,6 +276,9 @@ const showChapterCounts = ref(defaultShowChapterCounts);
 /** AI 阅读助手工具栏：深度思考 / 防剧透（持久化至 colorTxt.ui.settings） */
 const aiAssistantDeepThinking = ref(false);
 const aiAssistantSpoilerSafe = ref(false);
+const wordcloudFontFamily = ref(WORDCLOUD_DEFAULT_FONT_FAMILY);
+const wordcloudAngleMode = ref<WordcloudAngleMode>(WORDCLOUD_DEFAULT_ANGLE_MODE);
+const wordcloudPaletteId = ref<WordcloudPaletteId>(WORDCLOUD_DEFAULT_PALETTE_ID);
 const voiceReadSettings = ref<VoiceReadSettings>(
   mergeVoiceReadSettings(undefined),
 );
@@ -800,6 +812,9 @@ const persistence = useAppPersistence({
   aiCustomSkills,
   aiAssistantDeepThinking,
   aiAssistantSpoilerSafe,
+  wordcloudFontFamily,
+  wordcloudAngleMode,
+  wordcloudPaletteId,
   voiceReadSettings,
 });
 const {
@@ -827,6 +842,9 @@ watch(fileListEditing, (editing, wasEditing) => {
 
 watch(aiAssistantDeepThinking, () => persistSettings());
 watch(aiAssistantSpoilerSafe, () => persistSettings());
+watch(wordcloudAngleMode, () => persistSettings());
+watch(wordcloudPaletteId, () => persistSettings());
+watch(wordcloudFontFamily, () => persistSettings());
 watch(characterCardTextureEffect, () => persistSettings());
 watch(
   voiceReadSettings,
@@ -2348,6 +2366,9 @@ useAppShellThemeWatch({
           @open-file="openFileFromSidebar"
           @jump-to-chapter="onJumpToChapterFromSidebar"
           @jump-to-chapter-from-ai="jumpToChapterFromAiAssistant"
+          v-model:wordcloud-font-family="wordcloudFontFamily"
+          v-model:wordcloud-angle-mode="wordcloudAngleMode"
+          v-model:wordcloud-palette-id="wordcloudPaletteId"
           @clear-file-list="clearFileList"
           @clear-file-list-category="clearFileListForCategory"
           @remove-file-list="removeFileList"

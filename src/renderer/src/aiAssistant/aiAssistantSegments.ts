@@ -31,6 +31,7 @@ export function toolDisplayLabel(
   if (n === "ragSearch") return "搜索书籍内容";
   if (n === "ragContext") return "读取章节原文";
   if (n === "mindmap") return "生成思维导图";
+  if (n === "wordcloud") return "生成词云图";
   if (n === "getSkills") return "查询技能";
   const mapped = skillToolLabels?.[n];
   if (mapped) return mapped;

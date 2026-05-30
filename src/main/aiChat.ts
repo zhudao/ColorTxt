@@ -11,6 +11,7 @@ import {
   extractUsageFromChatJson,
   type AITokenUsageTotals,
 } from "@shared/aiTokenUsage";
+import { resolveAgentDeepThinkingParams } from "./aiChatThinking";
 
 function normalizeBase(u: string): string {
   return u.replace(/\/+$/, "");
@@ -258,6 +259,22 @@ export function abortChatRequest(requestId: number): void {
   chatAbortControllers.delete(requestId);
 }
 
+function extractTextFromMessagePart(part: unknown): string {
+  if (typeof part === "string") return part;
+  if (!part || typeof part !== "object") return "";
+  const o = part as Record<string, unknown>;
+  if (typeof o.text === "string") return o.text;
+  return "";
+}
+
+function looksLikeStructuredModelOutput(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  if (t.startsWith("{") || t.startsWith("[")) return true;
+  if (t.includes("```")) return true;
+  return false;
+}
+
 function extractNonStreamAssistantContent(json: unknown): string {
   if (!json || typeof json !== "object") return "";
   const o = json as Record<string, unknown>;
@@ -266,8 +283,27 @@ function extractNonStreamAssistantContent(json: unknown): string {
   const c = ch0 as Record<string, unknown>;
   const msg = c.message;
   if (msg && typeof msg === "object") {
-    const content = (msg as Record<string, unknown>).content;
-    if (typeof content === "string") return content;
+    const m = msg as Record<string, unknown>;
+    const content = m.content;
+    if (typeof content === "string" && content.trim()) return content;
+    if (Array.isArray(content)) {
+      const joined = content
+        .map(extractTextFromMessagePart)
+        .filter(Boolean)
+        .join("");
+      if (joined.trim()) return joined;
+    }
+    const reasoningContent = m.reasoning_content;
+    if (
+      typeof reasoningContent === "string" &&
+      looksLikeStructuredModelOutput(reasoningContent)
+    ) {
+      return reasoningContent;
+    }
+    const reasoning = m.reasoning;
+    if (typeof reasoning === "string" && looksLikeStructuredModelOutput(reasoning)) {
+      return reasoning;
+    }
   }
   const text = c.text;
   if (typeof text === "string") return text;
@@ -297,6 +333,13 @@ export async function chatCompletionOnce(opts: {
   const model = opts.chat.model.trim();
   if (!model) throw new Error("未配置对话模型");
 
+  const configuredTemp = opts.temperature ?? opts.chat.temperature;
+  const { temperature, extraBody } = resolveAgentDeepThinkingParams({
+    deepThinking: false,
+    configuredTemperature: configuredTemp,
+    baseUrl: opts.chat.baseUrl,
+  });
+
   const res = await fetch(url, {
     method: "POST",
     headers,
@@ -304,9 +347,10 @@ export async function chatCompletionOnce(opts: {
     body: JSON.stringify({
       model,
       messages: opts.messages,
-      temperature: opts.temperature ?? opts.chat.temperature,
+      temperature,
       max_tokens: opts.maxTokens ?? opts.chat.maxTokens,
       stream: false,
+      ...extraBody,
     }),
   });
 

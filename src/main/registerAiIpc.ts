@@ -56,6 +56,7 @@ import {
   runPortraitPromptZhToEn,
   runTxt2ImgToAbsolutePath,
 } from "./aiCharacterPortrait";
+import { deleteBookSegmentCache } from "./aiSegmentCache";
 import { adaptPortraitPromptForBackend } from "./aiTxt2ImgPromptAdapt";
 import { testTxt2ImgConnection } from "./aiTxt2ImgTestConnection";
 import { mergeTxt2ImgZhGeneralBeforeSpecific } from "./txt2imgMergeZh";
@@ -74,6 +75,7 @@ import {
   renameThread,
   resetEmbeddingDimension,
   searchChunks,
+  updateToolMessageContent,
 } from "./aiVectorDb";
 
 /** 角色「AI 检索」：同一会话的 extract + infer 共用 AbortSignal（renderer 传 retrieveSessionId） */
@@ -538,6 +540,7 @@ export function registerAiIpcHandlers(): void {
       openOrRecreateAiVectorDb(c.embedding.dimension);
       if (typeof bookHash !== "string") return { ok: false };
       deleteBookIndex(bookHash);
+      deleteBookSegmentCache(bookHash, c);
       return { ok: true };
     },
   );
@@ -1016,6 +1019,24 @@ export function registerAiIpcHandlers(): void {
         throw new Error("role");
       if (typeof content !== "string") throw new Error("content");
       return appendMessage(threadId, role, content, aborted === true);
+    },
+  );
+
+  ipcMain.handle(
+    "ai:message:updateToolContent",
+    async (
+      _evt,
+      threadId: unknown,
+      toolCallId: unknown,
+      content: unknown,
+    ) => {
+      const c = await cfg();
+      openOrRecreateAiVectorDb(c.embedding.dimension);
+      if (typeof threadId !== "string") throw new Error("threadId");
+      if (typeof toolCallId !== "string" || !toolCallId.trim())
+        throw new Error("toolCallId");
+      if (typeof content !== "string") throw new Error("content");
+      return updateToolMessageContent(threadId, toolCallId.trim(), content);
     },
   );
 

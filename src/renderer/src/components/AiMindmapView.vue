@@ -7,6 +7,7 @@ import {
   ref,
   watch,
 } from "vue";
+import { walkTree } from "markmap-common";
 import { Transformer } from "markmap-lib";
 import { Markmap } from "markmap-view";
 import { icons } from "../icons";
@@ -18,9 +19,13 @@ type MarkmapInst = Markmap;
 interface MarkmapHandle {
   setData: (root: unknown) => Promise<void>;
   fit: (maxScale?: number) => Promise<void>;
+  renderData: (originData?: unknown) => Promise<void>;
   destroy?: () => void;
   state: MarkmapInst["state"];
 }
+
+const EXPORT_SVG_WIDTH = 1200;
+const EXPORT_SVG_HEIGHT = 900;
 
 const MARKMAP_OPTIONS: Partial<MarkmapInst["options"]> = {
   /** 关闭库内自动 fit，避免 SVG 尺寸为 0 时 n/d → NaN；由 scheduleSafeFit 统一控制 */
@@ -305,7 +310,8 @@ function buildMarkmapOptions(interactive: boolean) {
     pan: interactive,
     /** 滚轮缩放；为 true 时滚轮会平移画布 */
     scrollForPan: false,
-    toggleRecursively: interactive,
+    /** 默认只切换当前节点；按住 Ctrl/Cmd 点击时 markmap 会递归切换子树 */
+    toggleRecursively: false,
     duration: markmapAnimDuration(interactive),
     color: () => themePrimaryColor(),
     style: (id: string) =>
@@ -319,7 +325,8 @@ function applyInlineInteraction(mm: MarkmapHandle, interactive: boolean) {
     zoom: interactive,
     pan: interactive,
     scrollForPan: false,
-    toggleRecursively: interactive,
+    /** 默认只切换当前节点；按住 Ctrl/Cmd 点击时 markmap 会递归切换子树 */
+    toggleRecursively: false,
     duration: markmapAnimDuration(interactive),
   });
   if (!interactive) {
@@ -486,12 +493,82 @@ function attachLayoutObservers() {
   }
 }
 
+function activeMarkmap(): MarkmapHandle | null {
+  return expanded.value ? fullscreenMarkmapRef.value : markmapRef.value;
+}
+
+function activeSvg(): SVGSVGElement | null {
+  return expanded.value ? fullscreenSvgRef.value : svgRef.value;
+}
+
+function asMarkmapInst(mm: MarkmapHandle | null): MarkmapInst | null {
+  return mm as unknown as MarkmapInst | null;
+}
+
+async function setTreeFoldAll(mm: MarkmapHandle | null, fold: 0 | 1) {
+  const inst = asMarkmapInst(mm);
+  const root = inst?.state.data;
+  if (!inst || !root) return;
+
+  walkTree(root, (node, next) => {
+    if (fold === 1) {
+      if (node.children?.length) {
+        node.payload = { ...node.payload, fold: 1 };
+      }
+    } else {
+      node.payload = { ...node.payload, fold: 0 };
+    }
+    next();
+  });
+  await inst.renderData();
+  scheduleSafeFit(mm, activeSvg());
+}
+
+async function handleCollapseAll() {
+  await setTreeFoldAll(activeMarkmap(), 1);
+}
+
+async function handleExpandAll() {
+  await setTreeFoldAll(activeMarkmap(), 0);
+}
+
 function handleReset() {
-  const mm = expanded.value
-    ? fullscreenMarkmapRef.value
-    : markmapRef.value;
-  const svg = expanded.value ? fullscreenSvgRef.value : svgRef.value;
-  scheduleSafeFit(mm, svg);
+  scheduleSafeFit(activeMarkmap(), activeSvg());
+}
+
+async function renderFullyExpandedExportSvg(): Promise<string | null> {
+  if (!markmapMarkdown.value.trim()) return null;
+
+  const container = document.createElement("div");
+  container.style.cssText =
+    "position:fixed;left:-10000px;top:0;width:0;height:0;overflow:hidden;visibility:hidden;pointer-events:none;";
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("width", String(EXPORT_SVG_WIDTH));
+  svg.setAttribute("height", String(EXPORT_SVG_HEIGHT));
+  svg.style.width = `${EXPORT_SVG_WIDTH}px`;
+  svg.style.height = `${EXPORT_SVG_HEIGHT}px`;
+  container.appendChild(svg);
+  document.body.appendChild(container);
+
+  let mm: MarkmapInst | null = null;
+  try {
+    const { root } = transformer.transform(markmapMarkdown.value);
+    mm = Markmap.create(svg, {
+      ...buildMarkmapOptions(false),
+      autoFit: false,
+      initialExpandLevel: -1,
+      duration: 0,
+      maxInitialScale: 999,
+    });
+    await mm.setData(root);
+    await mm.fit(999);
+    await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    return buildExportSvg(svg);
+  } finally {
+    mm?.destroy();
+    container.remove();
+  }
 }
 
 function buildExportSvg(source: SVGSVGElement): string | null {
@@ -565,9 +642,7 @@ function buildExportSvg(source: SVGSVGElement): string | null {
 }
 
 async function handleDownload() {
-  const source = expanded.value ? fullscreenSvgRef.value : svgRef.value;
-  if (!source) return;
-  const svgData = buildExportSvg(source);
+  const svgData = await renderFullyExpandedExportSvg();
   if (!svgData) return;
   const base = (props.title ?? "思维导图").trim() || "思维导图";
   const safe = base.replace(/[<>:"/\\|?*]/g, "_").slice(0, 80);
@@ -697,12 +772,40 @@ onBeforeUnmount(() => {
           <button
             type="button"
             class="aiActivityLikeBtn"
-            title="复原视图"
-            aria-label="复原视图"
+            title="复位"
+            aria-label="复位"
             @click="handleReset"
           >
             <span class="svg" v-html="icons.reset" />
           </button>
+          <span
+            class="aiMindmapFullscreen__toolbarSep"
+            role="separator"
+            aria-hidden="true"
+          />
+          <button
+            type="button"
+            class="aiActivityLikeBtn"
+            title="全部收起"
+            aria-label="全部收起"
+            @click="handleCollapseAll"
+          >
+            <span class="svg" v-html="icons.fold" />
+          </button>
+          <button
+            type="button"
+            class="aiActivityLikeBtn"
+            title="全部展开"
+            aria-label="全部展开"
+            @click="handleExpandAll"
+          >
+            <span class="svg" v-html="icons.expand" />
+          </button>
+          <span
+            class="aiMindmapFullscreen__toolbarSep"
+            role="separator"
+            aria-hidden="true"
+          />
           <button
             type="button"
             class="aiActivityLikeBtn"
@@ -763,12 +866,40 @@ onBeforeUnmount(() => {
           <button
             type="button"
             class="aiActivityLikeBtn"
-            title="复原视图"
-            aria-label="复原视图"
+            title="复位"
+            aria-label="复位"
             @click="handleReset"
           >
             <span class="svg" v-html="icons.reset" />
           </button>
+          <span
+            class="aiMindmapFullscreen__toolbarSep"
+            role="separator"
+            aria-hidden="true"
+          />
+          <button
+            type="button"
+            class="aiActivityLikeBtn"
+            title="全部收起"
+            aria-label="全部收起"
+            @click="handleCollapseAll"
+          >
+            <span class="svg" v-html="icons.fold" />
+          </button>
+          <button
+            type="button"
+            class="aiActivityLikeBtn"
+            title="全部展开"
+            aria-label="全部展开"
+            @click="handleExpandAll"
+          >
+            <span class="svg" v-html="icons.expand" />
+          </button>
+          <span
+            class="aiMindmapFullscreen__toolbarSep"
+            role="separator"
+            aria-hidden="true"
+          />
           <button
             type="button"
             class="aiActivityLikeBtn"
@@ -846,6 +977,13 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
+}
+
+.aiMindmapFullscreen__toolbarSep {
+  width: 1px;
+  height: 16px;
+  flex-shrink: 0;
+  background: var(--border);
 }
 
 .aiMindmapFullscreen__actions .aiActivityLikeBtn {

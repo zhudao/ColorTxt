@@ -219,7 +219,8 @@ const emptyMessage = computed(() => {
   padding: 6px 4px 6px 8px;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
+  min-width: 0;
   cursor: pointer;
 }
 
@@ -234,16 +235,23 @@ const emptyMessage = computed(() => {
 }
 
 .highlightItemActions {
-  flex: 0 0 auto;
-  display: inline-flex;
+  flex-shrink: 0;
+  display: none;
   align-items: center;
   gap: 2px;
+}
+
+.highlightItem--favorited .highlightItemActions,
+.highlightItem:hover .highlightItemActions,
+.highlightItem:focus-within .highlightItemActions {
+  display: inline-flex;
 }
 
 .highlightFavoriteBtn,
 .highlightRemoveBtn {
   width: 22px;
   height: 22px;
+  flex-shrink: 0;
   border: none;
   background: transparent;
   display: inline-flex;
@@ -251,29 +259,15 @@ const emptyMessage = computed(() => {
   justify-content: center;
   cursor: pointer;
   color: var(--muted);
-  opacity: 0;
-  pointer-events: none;
-  transition:
-    opacity 0.15s ease,
-    color 0.15s ease;
+  transition: color 0.15s ease;
 }
 
 .highlightFavoriteBtn--active {
-  opacity: 1;
-  pointer-events: auto;
   color: var(--primary);
 }
 
 .highlightFavoriteBtn--active:hover {
   color: var(--muted);
-}
-
-.highlightItem:hover .highlightFavoriteBtn,
-.highlightItem:focus-within .highlightFavoriteBtn,
-.highlightItem:hover .highlightRemoveBtn,
-.highlightItem:focus-within .highlightRemoveBtn {
-  opacity: 1;
-  pointer-events: auto;
 }
 
 .highlightFavoriteBtn:hover:not(.highlightFavoriteBtn--active) {
@@ -297,8 +291,8 @@ const emptyMessage = computed(() => {
 }
 
 .highlightRemoveBtn .highlightActionIcon :deep(svg) {
-  width: 9px;
-  height: 9px;
+  width: 12px;
+  height: 12px;
 }
 
 .highlightActionIcon :deep(path) {

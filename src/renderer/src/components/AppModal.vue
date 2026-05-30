@@ -250,8 +250,9 @@ onBeforeUnmount(() => {
 
 .appModalCloseIcon :deep(svg) {
   display: block;
-  width: 12px;
-  height: 12px;
+  /* close.svg 图形留白较多，比工具栏同 px 更显小，弹框内略放大 */
+  width: 16px;
+  height: 16px;
 }
 
 .appModalCloseIcon :deep(path) {

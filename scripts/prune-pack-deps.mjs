@@ -341,6 +341,35 @@ function ensureSharpPackStub(nodeModulesRoot) {
   fs.cpSync(SHARP_STUB_SRC, dest, { recursive: true });
 }
 
+/** 仅保留当前平台的 @node-rs/jieba-* 原生扩展包 */
+function pruneJiebaPlatformPackages(nodeModulesRoot, plat, arch) {
+  const jiebaRoot = path.join(nodeModulesRoot, "@node-rs", "jieba");
+  if (fs.existsSync(jiebaRoot)) {
+    rm(path.join(jiebaRoot, "README.md"));
+  }
+  const scope = path.join(nodeModulesRoot, "@node-rs");
+  if (!fs.existsSync(scope)) return;
+  const platToken =
+    plat === "darwin"
+      ? arch === "arm64"
+        ? "darwin-arm64"
+        : "darwin-x64"
+      : plat === "linux"
+        ? arch === "arm64"
+          ? "linux-arm64-gnu"
+          : "linux-x64-gnu"
+        : arch === "arm64"
+          ? "win32-arm64-msvc"
+          : "win32-x64-msvc";
+  const keep = `jieba-${platToken}`;
+  for (const ent of fs.readdirSync(scope, { withFileTypes: true })) {
+    if (!ent.isDirectory()) continue;
+    if (ent.name.startsWith("jieba-") && ent.name !== keep) {
+      rm(path.join(scope, ent.name));
+    }
+  }
+}
+
 function main() {
   if (!fs.existsSync(nm)) {
     console.warn("[prune-pack-deps] skip: node_modules not found");
@@ -358,6 +387,7 @@ function main() {
   pruneBetterSqlite3(nm);
   pruneFontList(nm, plat);
   pruneSqliteVec(nm, plat, arch);
+  pruneJiebaPlatformPackages(nm, plat, arch);
   pruneInstallOnlyPackages(nm);
   patchBetterSqlite3Manifest(nm);
 

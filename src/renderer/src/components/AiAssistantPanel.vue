@@ -33,8 +33,14 @@ import {
 } from "../utils/readerSurroundingPlainText";
 import { dirnameFs, joinFs } from "../ebook/pathUtils";
 import AiAssistantChatMessages from "./AiAssistantChatMessages.vue";
+import type { WordcloudAngleMode } from "../constants/wordcloudUi";
+import type { WordcloudPaletteId } from "../constants/wordcloudPalettes";
 import { rowsToUiMessages } from "../aiAssistant/aiAssistantDbMessages";
 import { parseMindmapToolResult } from "../aiAssistant/parseMindmapToolResult";
+import {
+  parseWordcloudToolResult,
+  patchWordcloudToolResultLayoutSeed,
+} from "../aiAssistant/parseWordcloudToolResult";
 import type { UiTokenUsageMsg } from "../aiAssistant/aiAssistantTypes";
 import {
   buildChatExportDefaultName,
@@ -64,6 +70,7 @@ import AppCustomSelect, { type CustomSelectItem } from "./AppCustomSelect.vue";
 import { icons } from "../icons";
 import { appAlert } from "../services/appDialog";
 import { appToast } from "../services/appToast";
+import { APP_DISPLAY_NAME } from "../constants/appUi";
 
 /** 导出对话下拉菜单固定宽度（与内容版式一致，不作视口/触发器推算） */
 const AI_EXPORT_MENU_WIDTH_PX = 210;
@@ -101,6 +108,16 @@ const props = defineProps<{
   /** 设置「确定」保存 AI 配置后递增，用于刷新快速提问与对话模型缓存 */
   aiConfigSyncNonce?: number;
 }>();
+
+const wordcloudFontFamily = defineModel<string>("wordcloudFontFamily", {
+  required: true,
+});
+const wordcloudAngleMode = defineModel<WordcloudAngleMode>("wordcloudAngleMode", {
+  required: true,
+});
+const wordcloudPaletteId = defineModel<WordcloudPaletteId>("wordcloudPaletteId", {
+  required: true,
+});
 
 const emit = defineEmits<{
   jumpToChapter: [chapter: Chapter];
@@ -671,6 +688,36 @@ async function loadMessagesForThread(tid: string) {
   await scrollListToBottomAfterMessagesLoad();
 }
 
+function onWordcloudLayoutSeedChange(
+  toolCallId: string,
+  layoutSeed: number,
+) {
+  const tid = threadId.value;
+  if (!tid || !toolCallId) return;
+
+  let patched: string | null = null;
+  for (const m of messages.value) {
+    if (m.role !== "assistant") continue;
+    const t = m.tools.find((x) => x.toolCallId === toolCallId);
+    if (!t?.wordcloud) continue;
+    patched = patchWordcloudToolResultLayoutSeed(t.full, layoutSeed);
+    if (!patched) return;
+    t.full = patched;
+    t.preview =
+      patched.length > 360 ? `${patched.slice(0, 360)}…` : patched;
+    if (t.wordcloud) {
+      t.wordcloud.layoutSeed = layoutSeed > 0 ? layoutSeed : undefined;
+    }
+    break;
+  }
+  if (!patched) return;
+  void window.colorTxt.ai.messageUpdateToolContent(tid, toolCallId, patched).catch(
+    () => {
+      /* 界面已更新；落库失败时下次载入会回到旧 seed */
+    },
+  );
+}
+
 async function ensureThread() {
   if (!bookHash.value) return;
   const bh = bookHash.value;
@@ -936,10 +983,13 @@ onMounted(() => {
           t.status = ev.ok ? "done" : "error";
           t.preview = ev.preview;
           t.full = ev.full;
-          if (ev.name === "mindmap" && ev.ok) {
-            t.mindmap = parseMindmapToolResult(ev.full) ?? undefined;
-          } else {
-            t.mindmap = undefined;
+          if (ev.name === "mindmap") {
+            t.mindmap =
+              ev.ok ? (parseMindmapToolResult(ev.full) ?? undefined) : undefined;
+          }
+          if (ev.name === "wordcloud") {
+            t.wordcloud =
+              ev.ok ? (parseWordcloudToolResult(ev.full) ?? undefined) : undefined;
           }
         }
         break;
@@ -1038,9 +1088,7 @@ async function requestRebuildVectorIndex(): Promise<void> {
     return;
   }
   if (isAiVectorIndexPhaseBusy()) {
-    appToast("索引任务正在进行中，请稍候。", {
-      kind: "primary",
-    });
+    appToast("索引任务正在进行中，请稍候。");
     return;
   }
   if (chatAwaitingReply.value || streaming.value) {
@@ -1061,6 +1109,41 @@ async function requestRebuildVectorIndex(): Promise<void> {
     indexPhase.value = "error";
     indexError.value = e instanceof Error ? e.message : String(e);
   }
+}
+
+/** 侧栏 header「更多 → 清除缓存」：删除本书向量索引与分词缓存（不含对话记录） */
+async function requestClearAiBookCache(): Promise<void> {
+  if (!bookHash.value) return;
+  if (isAiVectorIndexPhaseBusy()) {
+    appToast("索引任务正在进行中，请稍候。");
+    return;
+  }
+  if (chatAwaitingReply.value || streaming.value) {
+    appToast("对话正在进行中，请先停止或等待完成后再清除缓存。");
+    return;
+  }
+  const r = await window.colorTxt.showMessageBox({
+    type: "warning",
+    title: APP_DISPLAY_NAME,
+    buttons: ["取消", "清除"],
+    defaultId: 1,
+    cancelId: 0,
+    message: "是否清除本书 AI 缓存？",
+    detail:
+      "将删除本书的向量索引与词云分词缓存；对话记录会保留。",
+    noLink: true,
+  });
+  if (r.response !== 1) return;
+  const del = await window.colorTxt.ai.indexDeleteBook(bookHash.value);
+  if (!del.ok) {
+    await appAlert("清除缓存失败。");
+    return;
+  }
+  indexPhase.value = "idle";
+  indexError.value = "";
+  indexEmbedCurrent.value = 0;
+  indexEmbedTotal.value = 0;
+  appToast("已清除本书 AI 缓存。", { kind: "success" });
 }
 
 async function buildIndex(
@@ -1571,7 +1654,7 @@ async function copyAllMarkdown() {
       ),
     );
   } catch {
-    appToast("复制失败：剪贴板不可用");
+    appToast("复制失败：剪贴板不可用", { kind: "danger", showClose: true, duration: 0 });
   }
 }
 
@@ -1594,7 +1677,7 @@ async function copyAllMarkdownWithReasoning() {
       ),
     );
   } catch {
-    appToast("复制失败：剪贴板不可用");
+    appToast("复制失败：剪贴板不可用", { kind: "danger", showClose: true, duration: 0 });
   }
 }
 
@@ -1665,6 +1748,7 @@ async function onChClick(chapterIndexZeroBased: number) {
   else
     appToast(
       `未找到第 ${chapterIndexZeroBased + 1} 章（chapterIndex=${chapterIndexZeroBased}）`,
+      { kind: "danger", showClose: true, duration: 0 },
     );
 }
 
@@ -1677,6 +1761,7 @@ function onKeydown(e: KeyboardEvent) {
 
 defineExpose({
   requestRebuildVectorIndex,
+  requestClearAiBookCache,
 });
 </script>
 
@@ -1884,7 +1969,11 @@ defineExpose({
               showTokenUsage ? chatTokenPricePerMillion : null
             "
             :chapters="chapters"
+            v-model:wordcloud-font-family="wordcloudFontFamily"
+            v-model:wordcloud-angle-mode="wordcloudAngleMode"
+            v-model:wordcloud-palette-id="wordcloudPaletteId"
             @chapter-click="onChClick"
+            @wordcloud-layout-seed-change="onWordcloudLayoutSeedChange"
           />
         </div>
         <button

@@ -286,6 +286,7 @@ function resetAiDraft() {
     quickQuestions: structuredClone(def.quickQuestions),
     showTokenUsage: def.showTokenUsage,
     autoMindmapOnSummaryAndCharacters: def.autoMindmapOnSummaryAndCharacters,
+    wordcloudMaxWords: def.wordcloudMaxWords,
   };
 }
 

@@ -85,6 +85,8 @@ export default defineConfig({
           "better-sqlite3",
           "sqlite-vec",
           "ws",
+          "@node-rs/jieba",
+          "@node-rs/jieba/dict",
           "@huggingface/transformers",
           "@huggingface/jinja",
           "onnxruntime-node",
@@ -156,7 +158,7 @@ export default defineConfig({
       }),
     ],
     optimizeDeps: {
-      include: ["markmap-lib", "markmap-view"],
+      include: ["markmap-lib", "markmap-view", "d3-cloud", "d3-scale"],
     },
     build: {
       outDir: resolve(__electronViteConfigDir, "dist/renderer"),

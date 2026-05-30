@@ -83,7 +83,7 @@ function applyDeepThinkingToExtraBody(
   deepThinking: boolean,
 ): void {
   if (localOpenAiCompatLikely(baseUrl)) {
-    if (deepThinking) extraBody.think = true;
+    extraBody.think = deepThinking;
     return;
   }
   if (deepseekCloudLikely(baseUrl)) {
@@ -104,7 +104,7 @@ function applyDeepThinkingToExtraBody(
     return;
   }
   if (siliconflowLikely(baseUrl)) {
-    if (deepThinking) extraBody.enable_thinking = true;
+    extraBody.enable_thinking = deepThinking;
     return;
   }
   if (openrouterLikely(baseUrl)) {

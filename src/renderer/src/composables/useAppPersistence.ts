@@ -93,6 +93,8 @@ import {
   mergeVoiceReadSettings,
   type VoiceReadSettings,
 } from "../constants/voiceRead";
+import type { WordcloudAngleMode } from "../constants/wordcloudUi";
+import type { WordcloudPaletteId } from "../constants/wordcloudPalettes";
 import {
   mergeAiCustomSkills,
   mergeAiSkillOverrides,
@@ -186,6 +188,9 @@ export function useAppPersistence(deps: {
   aiCustomSkills: Ref<AiCustomSkill[]>;
   aiAssistantDeepThinking: Ref<boolean>;
   aiAssistantSpoilerSafe: Ref<boolean>;
+  wordcloudFontFamily: Ref<string>;
+  wordcloudAngleMode: Ref<WordcloudAngleMode>;
+  wordcloudPaletteId: Ref<WordcloudPaletteId>;
   voiceReadSettings: Ref<VoiceReadSettings>;
 }) {
   const settingsLoaded = ref(false);
@@ -831,6 +836,19 @@ export function useAppPersistence(deps: {
       deps.aiAssistantSpoilerSafe.value = data.aiAssistantSpoilerSafe;
     }
 
+    if (
+      typeof data.wordcloudFontFamily === "string" &&
+      data.wordcloudFontFamily.trim()
+    ) {
+      deps.wordcloudFontFamily.value = data.wordcloudFontFamily.trim();
+    }
+    if (data.wordcloudAngleMode) {
+      deps.wordcloudAngleMode.value = data.wordcloudAngleMode;
+    }
+    if (data.wordcloudPaletteId) {
+      deps.wordcloudPaletteId.value = data.wordcloudPaletteId;
+    }
+
     deps.voiceReadSettings.value = mergeVoiceReadSettings(data.voiceRead);
 
     return {
@@ -914,6 +932,9 @@ export function useAppPersistence(deps: {
           : undefined,
       aiAssistantDeepThinking: deps.aiAssistantDeepThinking.value,
       aiAssistantSpoilerSafe: deps.aiAssistantSpoilerSafe.value,
+      wordcloudFontFamily: deps.wordcloudFontFamily.value,
+      wordcloudAngleMode: deps.wordcloudAngleMode.value,
+      wordcloudPaletteId: deps.wordcloudPaletteId.value,
       voiceRead: {
         ...voiceReadMerged,
         dashscopeApiKey: "",

@@ -31,6 +31,8 @@ import {
 } from "@shared/aiSkills";
 import type { VoiceReadSettings } from "../constants/voiceRead";
 import { normalizeCharacterCardTextureEffect } from "@shared/characterCardTextureEffects";
+import { parseWordcloudAngleMode } from "../constants/wordcloudUi";
+import { parseWordcloudPaletteId } from "../constants/wordcloudPalettes";
 
 export type PersistedSettingsData = {
   theme?: "vs" | "vs-dark";
@@ -107,6 +109,20 @@ export type PersistedSettingsData = {
   aiAssistantDeepThinking?: boolean;
   /** AI 阅读助手：防剧透 */
   aiAssistantSpoilerSafe?: boolean;
+  /** 词云全屏：字体（CSS font-family 串，与阅读器独立） */
+  wordcloudFontFamily?: string;
+  /** 词云全屏：角度布局 */
+  wordcloudAngleMode?: "horizontal" | "mixed" | "random";
+  /** 词云全屏：配色方案 */
+  wordcloudPaletteId?:
+    | "category10"
+    | "category20"
+    | "pastel"
+    | "paired"
+    | "dark"
+    | "accent"
+    | "warm"
+    | "cool";
   /**
    * 角色立绘缓存根目录（绝对路径）。
    * 缺省时运行时使用 `userData/CharacterPortrait`（子目录名见 `@shared/characterPortraitPaths`）。
@@ -337,6 +353,21 @@ export function loadPersistedSettingsData(
   }
   if (typeof obj.aiAssistantSpoilerSafe === "boolean") {
     data.aiAssistantSpoilerSafe = obj.aiAssistantSpoilerSafe;
+  }
+
+  if (
+    typeof obj.wordcloudFontFamily === "string" &&
+    obj.wordcloudFontFamily.trim()
+  ) {
+    data.wordcloudFontFamily = obj.wordcloudFontFamily.trim();
+  }
+  const wordcloudAngle = parseWordcloudAngleMode(obj.wordcloudAngleMode);
+  if (wordcloudAngle) {
+    data.wordcloudAngleMode = wordcloudAngle;
+  }
+  const wordcloudPalette = parseWordcloudPaletteId(obj.wordcloudPaletteId);
+  if (wordcloudPalette) {
+    data.wordcloudPaletteId = wordcloudPalette;
   }
 
   if (typeof obj.characterPortraitCacheDir === "string") {

@@ -4,6 +4,7 @@ import { registerMainIpcHandlers } from "./ipcHandlers";
 import { setupLaunchTxtHandlers } from "./launchTxtHandlers";
 import { registerGlobalShortcuts, unregisterGlobalShortcuts } from "./globalShortcuts";
 import { registerUpdaterIpc, setupAutoUpdater } from "./updater";
+import { markAppQuittingForClose } from "./windowCloseGuard";
 import { createMainWindowFactory } from "./windowFactory";
 
 /** 须在 `app.ready` 之前注册，否则自定义协议无法在渲染进程用于 `<img>` 等 */
@@ -57,5 +58,7 @@ app.on("will-quit", () => {
 });
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
+  // 末窗关闭后须再次 quit；macOS 上 Cmd+Q 首次 quit 常被关窗拦截 cancel，靠此路径收尾
+  markAppQuittingForClose();
+  app.quit();
 });

@@ -40,12 +40,13 @@ import {
 } from "./aiChat";
 import { runCharacterPortraitExtract } from "./aiCharacterPortrait";
 import { runMindmapTool } from "./aiMindmapTool";
+import { runWordcloudTool } from "./aiWordcloudTool";
 import {
   MINDMAP_AFTER_RAG_NUDGE,
-  resolveMindmapInjectHintForTurn,
   shouldProactiveMindmapNudgeAfterToolRound,
   shouldRequireMindmapAfterRag,
 } from "@shared/aiMindmapIntent";
+import { resolveVisualToolInjectHintsForTurn } from "@shared/aiVisualToolIntent";
 import { inferToolResultOk } from "@shared/aiToolResult";
 import { summarizeToolArgumentsJson } from "@shared/toolArgumentsDisplay";
 import {
@@ -119,6 +120,8 @@ function buildAgentSystemPrompt(
   chapterMatchRuleOnlyTurn: boolean,
   /** 本轮用户意图触发的 mindmap 附加说明；null 表示不注入 */
   mindmapInjectHint: string | null,
+  /** 本轮用户意图触发的 wordcloud 附加说明；null 表示不注入 */
+  wordcloudInjectHint: string | null,
 ): string {
   const lines: string[] = [
     "你是资深中文小说阅读助手，正在与用户讨论一部长篇作品。",
@@ -153,7 +156,7 @@ function buildAgentSystemPrompt(
       "- 信息已足够时，必须结束工具调用，直接输出最终自然语言答案，不要反复检索同一问题。",
       "- 当用户需要**角色外貌**、全身/衣着描写摘要或 **Stable Diffusion 中文 prompt** 草案（侧栏提交 SD 时会自动译英）时，调用 **extractCharacterAppearance**，参数 `characterName` 为角色名；返回 JSON（含 `excerpts`、`appearance_zh`、`sd_prompt_zh`、`negative_zh`、`confidence_note` 及 `gender`、`age_text`、`identity_zh`、`bio_zh`、`relations_zh` 等）与侧栏「角色」同源。用户开启防剧透时工具结果仅含当前阅读章节及之前的片段。",
       "## 思维导图（mindmap 工具）",
-      "- 可用 **mindmap** 将章节/全书概括、人物关系、概念结构可视化为导图；须先 **ragSearch** / **ragContext** 再调用；内容概括/人物关系类问题在检索后**必须**调用 mindmap，勿仅用长文代替。",
+      "- 可用 **mindmap** 将章节/全书概括、人物关系、概念结构可视化为导图；须先 **ragSearch** / **ragContext** 再调用；适合结构化展示的问题在检索后**应**调用 mindmap，勿仅用长文代替。",
       "- **全书概括**（如「概括本书内容」）：以 **ragSearch** 多轮/多关键词为主，勿仅用当前章 ragContext。",
       "- `markdown` 使用 `#` / `##` / `###` / `-` 层级；**禁止**在回答正文或工具参数中使用 Mermaid `mindmap` 语法。",
       "",
@@ -167,6 +170,14 @@ function buildAgentSystemPrompt(
       "",
     );
   }
+
+  lines.push(
+    "## 词云（wordcloud 工具）",
+    "- 用户要词云/词频图时调用 **wordcloud**；**禁止**自行编造 `words` 权重。",
+    "- 全书/本章高频词：`mode=general`；特定主题/语义词云：`mode=semantic`，`semanticQuery` 为贴近用户原话的自由文本（无固定类别）。",
+    "- 工具内完成分词与计数；**不依赖**向量索引，**不必**先 ragSearch。",
+    "",
+  );
 
   lines.push(
     "## 书籍信息（不含正文）",
@@ -321,6 +332,10 @@ function buildAgentSystemPrompt(
 
   if (mindmapInjectHint?.trim()) {
     lines.push(mindmapInjectHint.trim(), "");
+  }
+
+  if (wordcloudInjectHint?.trim()) {
+    lines.push(wordcloudInjectHint.trim(), "");
   }
 
   return lines.join("\n");
@@ -921,6 +936,7 @@ async function dispatchTool(
     onTokenUsage?: (usage: AITokenUsageTotals) => void;
     signal?: AbortSignal;
     chapterMatchRuleOnlyTurn: boolean;
+    chapterCount: number;
   },
 ): Promise<string> {
   let args: Record<string, unknown> = {};
@@ -1010,6 +1026,43 @@ async function dispatchTool(
       const preview = `${result.title}\n${result.markdown.slice(0, 280)}${
         result.markdown.length > 280 ? "…" : ""
       }`;
+      ctx.emit({
+        type: "tool_result",
+        requestId: ctx.requestId,
+        toolCallId: ctx.toolCallId,
+        name,
+        ok: true,
+        preview,
+        full,
+      });
+      return full;
+    }
+    if (name === "wordcloud") {
+      const result = await runWordcloudTool(args, {
+        bookHash: ctx.bookHash,
+        chapterCount: ctx.chapterCount,
+        spoilerMaxChapterIndex: ctx.spoilerMaxChapterIndex,
+        webContents: ctx.webContents,
+        chat: ctx.chat,
+        aiConfig: ctx.aiConfig,
+        onProgress: (title, detail) => {
+          ctx.emit({
+            type: "tool_progress",
+            requestId: ctx.requestId,
+            toolCallId: ctx.toolCallId,
+            title,
+            detail: detail ?? "",
+          });
+        },
+        onTokenUsage: ctx.onTokenUsage,
+        signal: ctx.signal,
+      });
+      const full = JSON.stringify(result);
+      const top = result.words
+        .slice(0, 8)
+        .map((w) => `${w.text}(${w.weight})`)
+        .join("、");
+      const preview = `${result.title}\n${top}${result.words.length > 8 ? "…" : ""}`;
       ctx.emit({
         type: "tool_result",
         requestId: ctx.requestId,
@@ -1222,12 +1275,13 @@ export async function runAgentChat(opts: {
       ragEnabled,
       chapterMatchRuleOnlyTurn,
     );
-    const mindmapInjectHint = resolveMindmapInjectHintForTurn({
-      userText: payload.userText,
-      autoMindmapOnSummaryAndCharacters:
-        aiConfig.autoMindmapOnSummaryAndCharacters !== false,
-      chapterMatchRuleOnlyTurn,
-    });
+    const { mindmapInjectHint, wordcloudInjectHint } =
+      resolveVisualToolInjectHintsForTurn({
+        userText: payload.userText,
+        autoMindmapOnSummaryAndCharacters:
+          aiConfig.autoMindmapOnSummaryAndCharacters !== false,
+        chapterMatchRuleOnlyTurn,
+      });
     const systemContent = buildAgentSystemPrompt(
       payload.bookMeta,
       payload.deepThinking,
@@ -1238,6 +1292,7 @@ export async function runAgentChat(opts: {
       chapterMatchSkillRagUnrestricted,
       chapterMatchRuleOnlyTurn,
       mindmapInjectHint,
+      wordcloudInjectHint,
     );
 
     const absorbTokenUsage = (part: AITokenUsageTotals | null | undefined) => {
@@ -1439,6 +1494,7 @@ export async function runAgentChat(opts: {
               onTokenUsage: absorbTokenUsage,
               signal: ac.signal,
               chapterMatchRuleOnlyTurn,
+              chapterCount: payload.bookMeta.chapterCount,
             });
           }
           appendAgentMessageRow({

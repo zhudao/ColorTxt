@@ -61,6 +61,16 @@ export const VECTOR_SQLITE_BUNDLE_FILES = [
   "vector.sqlite-shm",
 ] as const;
 
+export const SEGMENT_SQLITE_BUNDLE_FILES = [
+  "segment.sqlite",
+  "segment.sqlite-wal",
+  "segment.sqlite-shm",
+] as const;
+
+export function segmentDbFilePath(cfg?: AIConfig): string {
+  return path.join(resolveAiDataCacheRoot(cfg), "segment.sqlite");
+}
+
 export const AI_DATA_CACHE_MIGRATE_FILES = [
   "config.json",
   ...VECTOR_SQLITE_BUNDLE_FILES,

@@ -325,10 +325,12 @@ export interface AIConfig {
   /** 侧栏展示 Token 消耗信息；关闭后隐藏价格相关设置 */
   showTokenUsage: boolean;
   /**
-   * 内容概括/人物关系类问题是否引导 Agent 自动调用 mindmap；默认 true。
+   * 开放型 / 结构化问题是否引导 Agent 自动调用 mindmap；默认 true。
    * 关闭后仅在用户明确提到「思维导图/导图」等时注入出图提示。
    */
   autoMindmapOnSummaryAndCharacters: boolean;
+  /** 词云图展示词项数量上限（general / semantic 均适用） */
+  wordcloudMaxWords: number;
   txt2img: AITxt2ImgConfig;
 }
 
@@ -340,10 +342,33 @@ export interface AIMindmapToolResult {
   stats?: { nodeCount: number; maxDepth: number };
 }
 
+export type AIWordcloudMode = "general" | "semantic";
+
+/** wordcloud 工具返回（持久化在 tool 消息 content） */
+export interface AIWordcloudToolResult {
+  type: "wordcloud";
+  title: string;
+  mode: AIWordcloudMode;
+  /** 语义词云：Agent 从用户原话归纳的语义描述 */
+  semanticQuery?: string;
+  scope: "full" | "chapter";
+  chapterIndex?: number;
+  words: Array<{ text: string; weight: number }>;
+  /** 布局随机种子（每条词云独立；重新生成时递增并持久化） */
+  layoutSeed?: number;
+  stats?: {
+    totalChars: number;
+    uniqueTerms: number;
+    cacheHits: number;
+    termsExtracted?: number;
+  };
+}
+
 /** 内置默认快速提问（配置缺失或清空后回退） */
 export const DEFAULT_AI_QUICK_QUESTIONS: readonly string[] = [
   "这章讲了什么",
-  "本书的主角与重要配角都有谁",
+  "生成人物关系图",
+  "生成角色词云",
   "概括本书内容",
 ];
 
@@ -361,6 +386,20 @@ export function normalizeAiQuickQuestions(raw: unknown): string[] {
     if (out.length >= 24) break;
   }
   return out.length > 0 ? out : [...DEFAULT_AI_QUICK_QUESTIONS];
+}
+
+export const WORDCLOUD_MAX_WORDS_MIN = 10;
+export const WORDCLOUD_MAX_WORDS_MAX = 200;
+export const DEFAULT_WORDCLOUD_MAX_WORDS = 80;
+
+export function normalizeWordcloudMaxWords(raw: unknown): number {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) {
+    return DEFAULT_WORDCLOUD_MAX_WORDS;
+  }
+  return Math.min(
+    WORDCLOUD_MAX_WORDS_MAX,
+    Math.max(WORDCLOUD_MAX_WORDS_MIN, Math.trunc(raw)),
+  );
 }
 
 export interface AIChunkRecord {
@@ -607,6 +646,53 @@ export const AI_AGENT_TOOLS: Array<{
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "wordcloud",
+      description:
+        "生成交互式词云图。general=全书/本章高频词（本地分词统计）；semantic=按 semanticQuery 自由文本语义筛选词项后本地计数。禁止自行编造词频；不依赖向量索引。",
+      parameters: {
+        type: "object",
+        properties: {
+          reasoning: {
+            type: "string",
+            description: "简要说明为何调用本工具",
+          },
+          title: {
+            type: "string",
+            description: "词云标题",
+          },
+          mode: {
+            type: "string",
+            enum: ["general", "semantic"],
+            description:
+              "general=通用高频词；semantic=按 semanticQuery 语义词云",
+          },
+          semanticQuery: {
+            type: "string",
+            description:
+              "mode=semantic 时必填：用户想要的词云语义（自由文本，贴近用户原话）",
+          },
+          scope: {
+            type: "string",
+            enum: ["full", "chapter"],
+            description: "统计范围；默认 full",
+          },
+          chapterIndex: {
+            type: "number",
+            description: "scope=chapter 时的章节索引（从 0 起）",
+          },
+          maxWords: {
+            type: "number",
+            description: "展示词数上限；未指定时使用阅读助手设置中的词云图词项上限",
+          },
+        },
+        required: ["reasoning", "title", "mode"],
+        additionalProperties: false,
+      },
+    },
+  },
 ];
 
 export interface AIIndexSearchHit {
@@ -737,5 +823,6 @@ export const defaultAIConfig: AIConfig = {
   quickQuestions: [...DEFAULT_AI_QUICK_QUESTIONS],
   showTokenUsage: true,
   autoMindmapOnSummaryAndCharacters: true,
+  wordcloudMaxWords: DEFAULT_WORDCLOUD_MAX_WORDS,
   txt2img: structuredClone(defaultTxt2ImgConfig),
 };

@@ -31,7 +31,10 @@ function iconHtml(kind: AppToastItem["kind"]): string {
           v-for="t in appToastItems"
           :key="t.id"
           class="appToastItem"
-          :class="`appToastItem--${t.kind}`"
+          :class="[
+            `appToastItem--${t.kind}`,
+            { 'appToastItem--closable': t.showClose },
+          ]"
           role="status"
         >
           <span
@@ -85,19 +88,22 @@ function iconHtml(kind: AppToastItem["kind"]): string {
   pointer-events: auto;
   display: flex;
   align-items: center;
-  justify-content: center;
-
+  justify-content: flex-start;
   gap: 10px;
-  width: 100%;
+  width: auto;
+  max-width: min(480px, 100%);
   box-sizing: border-box;
-  padding: 4px 4px 4px 10px;
+  padding: 4px 10px;
   border-radius: 4px;
   background: var(--control-bg);
   box-shadow:
     0 4px 18px color-mix(in srgb, var(--fg) 12%, transparent),
     0 0 1px color-mix(in srgb, var(--fg) 8%, transparent);
   border: 1px solid var(--border);
-  max-width: 100%;
+}
+
+.appToastItem--closable {
+  padding-right: 4px;
 }
 
 .appToastIcon {
@@ -121,13 +127,17 @@ function iconHtml(kind: AppToastItem["kind"]): string {
 }
 
 .appToastMsg {
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 0;
   font-size: 13px;
   line-height: 1.5;
   word-break: break-word;
   padding-top: 3px;
   padding-bottom: 2px;
+}
+
+.appToastItem--closable .appToastMsg {
+  flex: 1 1 auto;
 }
 
 .appToastClose {

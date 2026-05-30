@@ -2,7 +2,14 @@ import { BrowserWindow, ipcMain } from "electron";
 
 const allowNextClose = new WeakSet<BrowserWindow>();
 
+/** `app.quit()` 进行中：须绕过关窗拦截，否则 macOS 上 quit 会被 cancel 且进程残留 */
+let appIsQuitting = false;
+
 let ipcRegistered = false;
+
+export function markAppQuittingForClose(): void {
+  appIsQuitting = true;
+}
 
 export function registerWindowCloseGuardIpc() {
   if (ipcRegistered) return;
@@ -25,6 +32,7 @@ export function attachWindowCloseRequestGuard(win: BrowserWindow) {
       allowNextClose.delete(win);
       return;
     }
+    if (appIsQuitting) return;
     e.preventDefault();
     if (!win.webContents.isDestroyed()) {
       win.webContents.send("window:requestClose");

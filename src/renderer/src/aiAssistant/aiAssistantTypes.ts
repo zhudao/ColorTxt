@@ -1,3 +1,18 @@
+export type UiWordcloudAttachment = {
+  title: string;
+  mode: "general" | "semantic";
+  semanticQuery?: string;
+  words: Array<{ text: string; weight: number }>;
+  /** 布局随机种子（每条词云独立，随 tool 消息持久化） */
+  layoutSeed?: number;
+  stats?: {
+    totalChars: number;
+    uniqueTerms: number;
+    cacheHits: number;
+    termsExtracted?: number;
+  };
+};
+
 export type UiMindmapAttachment = {
   title: string;
   markdown: string;
@@ -22,6 +37,8 @@ export type UiToolEntry = {
   progressMessage?: string;
   /** mindmap 工具成功时解析出的导图数据 */
   mindmap?: UiMindmapAttachment;
+  /** wordcloud 工具成功时解析出的词云数据 */
+  wordcloud?: UiWordcloudAttachment;
 };
 
 /** 思考块：未封存 =「正在思考…」+ 脉冲；封存后 =「思考过程」+ 大脑 */

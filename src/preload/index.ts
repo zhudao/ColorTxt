@@ -641,6 +641,17 @@ const api = {
         content,
         aborted,
       ) as Promise<string>,
+    messageUpdateToolContent: (
+      threadId: string,
+      toolCallId: string,
+      content: string,
+    ) =>
+      ipcRenderer.invoke(
+        "ai:message:updateToolContent",
+        threadId,
+        toolCallId,
+        content,
+      ) as Promise<boolean>,
     exportSave: (payload: {
       defaultName: string;
       data: string;

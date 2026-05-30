@@ -1,11 +1,17 @@
 <script setup lang="ts">
-import { nextTick, ref } from "vue";
+import { computed, nextTick, ref } from "vue";
 import HexColorPickerField from "./HexColorPickerField.vue";
 import IconButton from "./IconButton.vue";
 import { icons } from "../icons";
+import {
+  SORTABLE_ROW_HANDLE_CLASS,
+  useSortableReorder,
+} from "../composables/useSortableReorder";
 
-defineProps<{
-  colors: string[];
+export type HighlightColorRow = { id: string; color: string };
+
+const props = defineProps<{
+  rows: HighlightColorRow[];
   previewHexes: string[];
   highlightReaderBg: string;
   bodyTextColor: string;
@@ -17,13 +23,24 @@ const emit = defineEmits<{
   "update-color": [index: number, color: string];
   "draft-hex": [index: number, hex: string];
   "draft-end": [];
-  "move-up": [index: number];
-  "move-down": [index: number];
+  reorder: [fromIndex: number, toIndex: number];
   remove: [index: number];
   add: [];
 }>();
 
 const tableScrollEl = ref<HTMLElement | null>(null);
+const tableBodyRef = ref<HTMLElement | null>(null);
+const rowCount = computed(() => props.rows.length);
+
+const { remount: remountHighlightSortable } = useSortableReorder({
+  containerRef: tableBodyRef,
+  itemCount: rowCount,
+  enabled: computed(() => props.rows.length > 1),
+  onReorder(from, to) {
+    emit("reorder", from, to);
+    remountHighlightSortable();
+  },
+});
 
 async function onAddClick() {
   emit("add");
@@ -36,15 +53,15 @@ async function onAddClick() {
 <template>
   <div class="colorSchemeHighlight" role="tabpanel">
     <div ref="tableScrollEl" class="schemePanelTableScroll">
-      <table class="highlightTable" :class="{ 'hasScrollBar': colors.length >= 6 }">
-        <tbody>
-          <tr v-for="(hex, rowIdx) in colors" :key="rowIdx">
+      <table class="highlightTable" :class="{ 'hasScrollBar': rows.length >= 6 }">
+        <tbody ref="tableBodyRef">
+          <tr v-for="(row, rowIdx) in rows" :key="row.id">
             <td class="hlColLabel colorSchemeRowLabel">
               高亮色 {{ rowIdx + 1 }}
             </td>
             <td class="hlColPicker">
               <HexColorPickerField
-                :model-value="hex"
+                :model-value="row.color"
                 @update:model-value="emit('update-color', rowIdx, $event)"
                 @draft-hex="emit('draft-hex', rowIdx, $event)"
                 @draft-end="emit('draft-end')"
@@ -66,21 +83,14 @@ async function onAddClick() {
             <td class="hlColActions">
               <div class="hlActionsInner">
                 <IconButton
-                  :icon-html="icons.up"
-                  aria-label="上移"
-                  title="上移"
-                  :disabled="rowIdx === 0"
-                  @click="emit('move-up', rowIdx)"
+                  :class="SORTABLE_ROW_HANDLE_CLASS"
+                  :icon-html="icons.move"
+                  aria-label="拖动排序"
+                  title="拖动排序"
+                  :disabled="rows.length <= 1"
                 />
                 <IconButton
-                  :icon-html="icons.down"
-                  aria-label="下移"
-                  title="下移"
-                  :disabled="rowIdx === colors.length - 1"
-                  @click="emit('move-down', rowIdx)"
-                />
-                <IconButton
-                  :class="{ invisible: colors.length <= minHighlightColors }"
+                  :class="{ invisible: rows.length <= minHighlightColors }"
                   :icon-html="icons.remove"
                   aria-label="删除"
                   title="删除"
@@ -165,8 +175,8 @@ async function onAddClick() {
 }
 
 .hlColActions {
-  /* width 30×3 + gap 4×2 + padding 10×2 */
-  width: 118px;
+  /* width 30×2 + gap 4 + padding 10×2 */
+  width: 84px;
   text-align: right;
 }
 
@@ -205,5 +215,21 @@ async function onAddClick() {
 
 .highlightAddBtnIcon :deep(path) {
   fill: currentColor;
+}
+
+:deep(tr.sortableRowGhost) {
+  opacity: 0.45;
+}
+
+:deep(tr.sortableRowChosen) {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+:deep(.sortableRowHandle) {
+  cursor: grab;
+}
+
+:deep(.sortableRowHandle:active) {
+  cursor: grabbing;
 }
 </style>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, withDefaults } from "vue";
+import { computed } from "vue";
 import "katex/dist/katex.min.css";
 import { marked } from "../utils/aiMarkdownMarkedSetup";
 import { ensureSpacesAroundMarkdownStrongPairs } from "../utils/aiMarkdownMarkedPrep";

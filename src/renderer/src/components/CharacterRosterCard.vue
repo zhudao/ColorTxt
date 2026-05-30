@@ -29,11 +29,19 @@ const props = withDefaults(
     textureEffect?: CharacterCardTextureEffectId;
     /** 从原位放大至视口中央（同一张卡，非复制 overlay） */
     popoverOpen?: boolean;
+    /** 排序拖动进行中时关闭倾斜，避免与拖动冲突 */
+    tiltEnabled?: boolean;
+    /** Sortable onStart：该卡正式进入拖动 */
+    reorderDragging?: boolean;
+    /** 点击翻面时同步检测，避免排序松手后 Vue 尚未 patch 就触发翻转 */
+    suppressFlipCheck?: () => boolean;
   }>(),
   {
     nameZoom: 1,
     textureEffect: DEFAULT_CHARACTER_CARD_TEXTURE_EFFECT,
     popoverOpen: false,
+    tiltEnabled: true,
+    reorderDragging: false,
   },
 );
 
@@ -60,6 +68,7 @@ const { popoverActive, shellStyle: popoverShellStyle } = useCharacterCardPopover
 const tilt = useCharacterCardTilt({
   enabled: computed(
     () =>
+      props.tiltEnabled &&
       props.textureEffect !== "off" &&
       (!props.popoverOpen || popoverActive.value),
   ),
@@ -108,6 +117,25 @@ watch(popoverActive, (active) => {
 watch(popoverOpenRef, (open) => {
   if (!open) tilt.resetIdle();
 });
+
+watch(
+  () => props.tiltEnabled,
+  (enabled, wasEnabled) => {
+    if (wasEnabled && !enabled) tilt.resetIdle();
+  },
+);
+
+watch(
+  () => props.reorderDragging,
+  (dragging, wasDragging) => {
+    if (dragging && !wasDragging) tilt.resetIdle();
+  },
+);
+
+function onFlipClick() {
+  if (props.suppressFlipCheck?.()) return;
+  emit("toggleFlip");
+}
 
 const backScrollEl = ref<HTMLElement | null>(null);
 
@@ -210,7 +238,7 @@ onBeforeUnmount(() => {
       >
     <div class="card__perspective">
       <div class="card__tilt">
-        <div class="card__flip" @click="emit('toggleFlip')">
+        <div class="card__flip" @click="onFlipClick">
         <div class="cardFace cardFront">
           <div
             class="portrait"
@@ -350,6 +378,13 @@ onBeforeUnmount(() => {
   will-change: transform;
   /* 仅平移/缩放（对齐 pokemon card__translater）；旋转在 .card__tilt */
   transition: transform 0.42s cubic-bezier(0.25, 0.9, 0.35, 1);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.cardShell--popover * {
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .card__perspective {

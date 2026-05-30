@@ -33,7 +33,10 @@ import {
 } from "./dialogInvoke";
 import type { CreateMainWindow } from "./windowFactory";
 import { registerLocalFileForColortxtUrl } from "./colortxtLocalProtocol";
-import { registerWindowCloseGuardIpc } from "./windowCloseGuard";
+import {
+  markAppQuittingForClose,
+  registerWindowCloseGuardIpc,
+} from "./windowCloseGuard";
 import {
   getToggleVisibilityShortcut,
   resumeGlobalShortcutsAfterRecording,
@@ -316,6 +319,7 @@ export function registerMainIpcHandlers(
   );
 
   ipcMain.on("app:quit", () => {
+    markAppQuittingForClose();
     app.quit();
   });
 

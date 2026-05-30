@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import AppModal from "./AppModal.vue";
 import HexColorPickerField from "./HexColorPickerField.vue";
 import IconButton from "./IconButton.vue";
@@ -8,6 +8,10 @@ import type { CategoryEditorRow } from "../constants/fileCategories";
 import { appAlert } from "../services/appDialog";
 import { normalizeLooseHex6 } from "../utils/color";
 import { icons } from "../icons";
+import {
+  SORTABLE_ROW_HANDLE_CLASS,
+  useSortableReorder,
+} from "../composables/useSortableReorder";
 
 const props = defineProps<{
   catalog: FileCategoryDefinition[];
@@ -28,6 +32,18 @@ const emit = defineEmits<{
 const manageDraft = ref<CategoryEditorRow[]>([]);
 const manageInitial = ref<CategoryEditorRow[]>([]);
 const tableScrollEl = ref<HTMLElement | null>(null);
+const tableBodyRef = ref<HTMLElement | null>(null);
+const rowCount = computed(() => manageDraft.value.length);
+
+useSortableReorder({
+  containerRef: tableBodyRef,
+  active: open,
+  itemCount: rowCount,
+  enabled: computed(() => manageDraft.value.length > 1),
+  onReorder(from, to) {
+    reorderManageRow(from, to);
+  },
+});
 
 watch(open, (isOpen) => {
   if (!isOpen) {
@@ -54,13 +70,12 @@ async function addManageRow() {
   if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
 }
 
-function moveManageRow(idx: number, dir: -1 | 1) {
-  const j = idx + dir;
-  if (j < 0 || j >= manageDraft.value.length) return;
+function reorderManageRow(fromIndex: number, toIndex: number) {
+  if (fromIndex === toIndex) return;
   const arr = manageDraft.value.slice();
-  const t = arr[idx]!;
-  arr[idx] = arr[j]!;
-  arr[j] = t;
+  const [item] = arr.splice(fromIndex, 1);
+  if (!item) return;
+  arr.splice(toIndex, 0, item);
   manageDraft.value = arr;
 }
 
@@ -126,7 +141,7 @@ function cancelManageModal() {
             <col class="manageCatColPicker" />
             <col class="manageCatColActions" />
           </colgroup>
-          <tbody>
+          <tbody ref="tableBodyRef">
             <tr v-for="(row, idx) in manageDraft" :key="row.key">
               <td class="catColName">
                 <input
@@ -144,19 +159,11 @@ function cancelManageModal() {
                 <div class="hlActionsInner">
                   <IconButton
                     large
-                    :icon-html="icons.up"
-                    aria-label="上移"
-                    title="上移"
-                    :disabled="idx === 0"
-                    @click="moveManageRow(idx, -1)"
-                  />
-                  <IconButton
-                    large
-                    :icon-html="icons.down"
-                    aria-label="下移"
-                    title="下移"
-                    :disabled="idx >= manageDraft.length - 1"
-                    @click="moveManageRow(idx, 1)"
+                    :class="SORTABLE_ROW_HANDLE_CLASS"
+                    :icon-html="icons.move"
+                    aria-label="拖动排序"
+                    title="拖动排序"
+                    :disabled="manageDraft.length <= 1"
                   />
                   <IconButton
                     large
@@ -258,7 +265,7 @@ function cancelManageModal() {
 }
 
 .manageCatTable col.manageCatColActions {
-  width: 118px;
+  width: 84px;
 }
 
 .catColName {
@@ -279,8 +286,8 @@ function cancelManageModal() {
 }
 
 .hlColActions {
-  width: 118px;
-  max-width: 118px;
+  width: 84px;
+  max-width: 84px;
   text-align: right;
   vertical-align: middle;
 }
@@ -329,5 +336,21 @@ function cancelManageModal() {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+:deep(tr.sortableRowGhost) {
+  opacity: 0.45;
+}
+
+:deep(tr.sortableRowChosen) {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+:deep(.sortableRowHandle) {
+  cursor: grab;
+}
+
+:deep(.sortableRowHandle:active) {
+  cursor: grabbing;
 }
 </style>

@@ -207,7 +207,12 @@ onBeforeUnmount(() => {
       @click.stop="toggleFontMenu"
     />
 
-    <div v-if="fontMenuOpen" class="fontMenu" @click.stop>
+    <div
+      v-if="fontMenuOpen"
+      class="fontMenu"
+      :class="{ 'fontMenu--other': showOtherFontsPanel }"
+      @click.stop
+    >
       <div v-if="!showOtherFontsPanel" class="fontMenuList">
         <button
           v-for="item in presetFontMenuItems"
@@ -311,11 +316,12 @@ onBeforeUnmount(() => {
 <style scoped>
 .fontPicker {
   position: relative;
+  display: inline-flex;
 }
 
 .fontMenu {
   position: absolute;
-  top: 38px;
+  top: calc(100% + 6px);
   left: 50%;
   transform: translateX(-50%);
   z-index: 1001;
@@ -326,6 +332,10 @@ onBeforeUnmount(() => {
   border-radius: 6px;
   padding: 6px;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+
+.fontMenu--other {
+  min-width: 220px;
 }
 
 .fontMenu::before,
@@ -425,6 +435,12 @@ onBeforeUnmount(() => {
 .fontOtherTitle {
   font-size: 12px;
   color: var(--fg);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.fontOtherHeader .btn {
+  flex-shrink: 0;
 }
 
 .fontOtherLoading,

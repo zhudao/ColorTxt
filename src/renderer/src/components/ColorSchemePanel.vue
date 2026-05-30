@@ -2,7 +2,9 @@
 import { computed, ref, watch } from "vue";
 import type { StyleValue } from "vue";
 import AppModal from "./AppModal.vue";
-import ColorSchemeHighlightPanel from "./ColorSchemeHighlightPanel.vue";
+import ColorSchemeHighlightPanel, {
+  type HighlightColorRow,
+} from "./ColorSchemeHighlightPanel.vue";
 import ColorSchemeReaderPanel from "./ColorSchemeReaderPanel.vue";
 import ColorSchemeTabBar from "./ColorSchemeTabBar.vue";
 import {
@@ -39,8 +41,23 @@ const activeTab = ref<"reader" | "highlight">("reader");
 const draftLight = ref<ReaderSurfacePalette>({ ...defaultReaderPaletteLight });
 const draftDark = ref<ReaderSurfacePalette>({ ...defaultReaderPaletteDark });
 
-const draftHighlightLight = ref<string[]>([...DEFAULT_HIGHLIGHT_COLORS_LIGHT]);
-const draftHighlightDark = ref<string[]>([...DEFAULT_HIGHLIGHT_COLORS_DARK]);
+let highlightRowIdSeq = 0;
+
+function newHighlightRowId(): string {
+  highlightRowIdSeq += 1;
+  return `hl-${Date.now()}-${highlightRowIdSeq}`;
+}
+
+function colorsToDraftRows(colors: readonly string[]): HighlightColorRow[] {
+  return colors.map((color) => ({ id: newHighlightRowId(), color }));
+}
+
+const draftHighlightLight = ref<HighlightColorRow[]>(
+  colorsToDraftRows(DEFAULT_HIGHLIGHT_COLORS_LIGHT),
+);
+const draftHighlightDark = ref<HighlightColorRow[]>(
+  colorsToDraftRows(DEFAULT_HIGHLIGHT_COLORS_DARK),
+);
 
 const isLightShell = computed(() => props.currentTheme === "vs");
 
@@ -77,7 +94,7 @@ const activeHighlightList = computed(() =>
 );
 
 const highlightPreviewHexes = computed(() =>
-  activeHighlightList.value.map((hex, i) => highlightPreviewHex(i, hex)),
+  activeHighlightList.value.map((row, i) => highlightPreviewHex(i, row.color)),
 );
 
 const bodyTextForHighlightPreview = computed(
@@ -90,8 +107,8 @@ function syncDraftFromProps() {
 }
 
 function syncHighlightDraftFromProps() {
-  draftHighlightLight.value = [...props.highlightColorsLight];
-  draftHighlightDark.value = [...props.highlightColorsDark];
+  draftHighlightLight.value = colorsToDraftRows(props.highlightColorsLight);
+  draftHighlightDark.value = colorsToDraftRows(props.highlightColorsDark);
 }
 
 function onPickerUpdate(key: keyof ReaderSurfacePalette, color: string) {
@@ -118,8 +135,8 @@ function onApplyAll() {
     dark: { ...draftDark.value },
   });
   emit("applyHighlightColors", {
-    light: [...draftHighlightLight.value],
-    dark: [...draftHighlightDark.value],
+    light: draftHighlightLight.value.map((r) => r.color),
+    dark: draftHighlightDark.value.map((r) => r.color),
   });
   modelValue.value = false;
 }
@@ -133,7 +150,7 @@ function onResetReaderDefaults() {
   draftDark.value = { ...defaultReaderPaletteDark };
 }
 
-function mutActiveHighlightDraft(updater: (arr: string[]) => void) {
+function mutActiveHighlightDraft(updater: (arr: HighlightColorRow[]) => void) {
   if (isLightShell.value) {
     const n = [...draftHighlightLight.value];
     updater(n);
@@ -148,7 +165,9 @@ function mutActiveHighlightDraft(updater: (arr: string[]) => void) {
 function onHighlightColorUpdate(rowIndex: number, color: string) {
   const hex = color.startsWith("#") ? color : `#${color}`;
   mutActiveHighlightDraft((arr) => {
-    if (rowIndex >= 0 && rowIndex < arr.length) arr[rowIndex] = hex;
+    if (rowIndex >= 0 && rowIndex < arr.length) {
+      arr[rowIndex] = { ...arr[rowIndex]!, color: hex };
+    }
   });
 }
 
@@ -167,21 +186,12 @@ function highlightPreviewHex(rowIndex: number, committedHex: string): string {
   return committedHex.startsWith("#") ? committedHex : `#${committedHex}`;
 }
 
-function moveHighlightUp(index: number) {
-  if (index <= 0) return;
+function reorderHighlight(fromIndex: number, toIndex: number) {
+  if (fromIndex === toIndex) return;
   mutActiveHighlightDraft((arr) => {
-    const t = arr[index - 1]!;
-    arr[index - 1] = arr[index]!;
-    arr[index] = t;
-  });
-}
-
-function moveHighlightDown(index: number) {
-  mutActiveHighlightDraft((arr) => {
-    if (index >= arr.length - 1) return;
-    const t = arr[index + 1]!;
-    arr[index + 1] = arr[index]!;
-    arr[index] = t;
+    const [item] = arr.splice(fromIndex, 1);
+    if (!item) return;
+    arr.splice(toIndex, 0, item);
   });
 }
 
@@ -194,14 +204,14 @@ function removeHighlightRow(index: number) {
 
 function addHighlightRow() {
   mutActiveHighlightDraft((arr) => {
-    const last = arr[arr.length - 1] ?? "#999999";
-    arr.push(last);
+    const last = arr[arr.length - 1]?.color ?? "#999999";
+    arr.push({ id: newHighlightRowId(), color: last });
   });
 }
 
 function onResetHighlightDefaults() {
-  draftHighlightLight.value = [...DEFAULT_HIGHLIGHT_COLORS_LIGHT];
-  draftHighlightDark.value = [...DEFAULT_HIGHLIGHT_COLORS_DARK];
+  draftHighlightLight.value = colorsToDraftRows(DEFAULT_HIGHLIGHT_COLORS_LIGHT);
+  draftHighlightDark.value = colorsToDraftRows(DEFAULT_HIGHLIGHT_COLORS_DARK);
 }
 
 watch(modelValue, (open) => {
@@ -249,7 +259,7 @@ watch(activeTab, (tab) => {
 
         <ColorSchemeHighlightPanel
           v-show="activeTab === 'highlight'"
-          :colors="activeHighlightList"
+          :rows="activeHighlightList"
           :preview-hexes="highlightPreviewHexes"
           :highlight-reader-bg="highlightReaderBg"
           :body-text-color="bodyTextForHighlightPreview"
@@ -258,8 +268,7 @@ watch(activeTab, (tab) => {
           @update-color="onHighlightColorUpdate"
           @draft-hex="onHighlightPickerDraftHex"
           @draft-end="onHighlightPickerDraftEnd"
-          @move-up="moveHighlightUp"
-          @move-down="moveHighlightDown"
+          @reorder="reorderHighlight"
           @remove="removeHighlightRow"
           @add="addHighlightRow"
         />

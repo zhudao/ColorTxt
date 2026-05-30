@@ -28,6 +28,15 @@ import CharacterSidebarPanel from "./CharacterSidebarPanel.vue";
 import SearchPanel from "./SearchPanel.vue";
 import type ReaderMain from "./ReaderMain.vue";
 import type { AiCustomSkill, AiSkillUserOverride } from "@shared/aiSkills";
+import {
+  WORDCLOUD_DEFAULT_ANGLE_MODE,
+  WORDCLOUD_DEFAULT_FONT_FAMILY,
+  type WordcloudAngleMode,
+} from "../constants/wordcloudUi";
+import {
+  WORDCLOUD_DEFAULT_PALETTE_ID,
+  type WordcloudPaletteId,
+} from "../constants/wordcloudPalettes";
 import { icons } from "../icons";
 import type { ReaderSidebarTab } from "../constants/readerSidebarTab";
 import {
@@ -172,6 +181,15 @@ const characterCardTextureEffect = defineModel<CharacterCardTextureEffectId>(
   "characterCardTextureEffect",
   { default: DEFAULT_CHARACTER_CARD_TEXTURE_EFFECT },
 );
+const wordcloudFontFamily = defineModel<string>("wordcloudFontFamily", {
+  default: WORDCLOUD_DEFAULT_FONT_FAMILY,
+});
+const wordcloudAngleMode = defineModel<WordcloudAngleMode>("wordcloudAngleMode", {
+  default: WORDCLOUD_DEFAULT_ANGLE_MODE,
+});
+const wordcloudPaletteId = defineModel<WordcloudPaletteId>("wordcloudPaletteId", {
+  default: WORDCLOUD_DEFAULT_PALETTE_ID,
+});
 
 const emit = defineEmits<{
   "update:activeTab": [value: ReaderSidebarTab];
@@ -419,9 +437,10 @@ const activePanelTitle = computed(() => {
 });
 
 /** 侧栏「AI 阅读助手」标题行「更多」菜单 */
-const AI_ASSISTANT_HEADER_MORE_MENU_W = 150;
+const AI_ASSISTANT_HEADER_MORE_MENU_W = 168;
 const aiAssistantPanelRef = ref<{
   requestRebuildVectorIndex: () => Promise<void>;
+  requestClearAiBookCache: () => Promise<void>;
 } | null>(null);
 const aiAssistantHeaderMoreBtnRef = ref<HTMLButtonElement | null>(null);
 
@@ -460,6 +479,12 @@ async function onAiAssistantHeaderMoreRebuildIndex() {
   closeAiAssistantHeaderMoreMenu();
   await nextTick();
   await aiAssistantPanelRef.value?.requestRebuildVectorIndex?.();
+}
+
+async function onAiAssistantHeaderMoreClearCache() {
+  closeAiAssistantHeaderMoreMenu();
+  await nextTick();
+  await aiAssistantPanelRef.value?.requestClearAiBookCache?.();
 }
 
 watch(
@@ -813,6 +838,9 @@ defineExpose({
           :ai-skill-overrides="aiSkillOverrides"
           :ai-custom-skills="aiCustomSkills"
           :ai-config-sync-nonce="aiAssistantConfigSyncNonce"
+          v-model:wordcloud-font-family="wordcloudFontFamily"
+          v-model:wordcloud-angle-mode="wordcloudAngleMode"
+          v-model:wordcloud-palette-id="wordcloudPaletteId"
           @jump-to-chapter="emit('jumpToChapterFromAi', $event)"
           @update:fullscreen-ai-assistant-popovers-open="
             aiAssistantPanelTeleportPopoversOpen = $event
@@ -884,6 +912,15 @@ defineExpose({
         @click="onAiAssistantHeaderMoreRebuildIndex"
       >
         重建向量索引
+      </button>
+      <div class="appShellMenuDivider" role="separator" />
+      <button
+        type="button"
+        class="appShellMenuItem appShellMenuItem--danger"
+        role="menuitem"
+        @click="onAiAssistantHeaderMoreClearCache"
+      >
+        清除缓存
       </button>
     </AppShellMenuTeleport>
     <AppShellMenuTeleport

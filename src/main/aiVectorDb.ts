@@ -530,6 +530,26 @@ export function appendMessage(
   });
 }
 
+/** 更新已落库 tool 消息的 content（如词云 layoutSeed） */
+export function updateToolMessageContent(
+  threadId: string,
+  toolCallId: string,
+  content: string,
+): boolean {
+  const database = getAiVectorDb();
+  const info = database
+    .prepare(
+      `UPDATE messages SET content = ?
+       WHERE thread_id = ? AND tool_call_id = ? AND role = 'tool'`,
+    )
+    .run(content, threadId, toolCallId);
+  if (info.changes > 0) {
+    touchThread(threadId);
+    return true;
+  }
+  return false;
+}
+
 export function appendAgentMessageRow(opts: {
   threadId: string;
   role: "user" | "assistant" | "system" | "tool";

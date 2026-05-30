@@ -6,6 +6,7 @@ import {
 } from "@shared/toolArgumentsDisplay";
 import type { AITokenUsageTotals } from "@shared/aiTokenUsage";
 import { parseMindmapToolResult } from "./parseMindmapToolResult";
+import { parseWordcloudToolResult } from "./parseWordcloudToolResult";
 import type {
   DbMsgRow,
   UiAssistantSegment,
@@ -231,6 +232,10 @@ export function rowsToUiMessages(rows: DbMsgRow[]): UiMsg[] {
               toolName === "mindmap"
                 ? parseMindmapToolResult(row.content) ?? undefined
                 : undefined;
+            const wordcloud =
+              toolName === "wordcloud"
+                ? parseWordcloudToolResult(row.content) ?? undefined
+                : undefined;
             const toolArgs = argsForToolCallId(pendingToolCalls, tcId);
             tools.push({
               id: row.id,
@@ -243,6 +248,7 @@ export function rowsToUiMessages(rows: DbMsgRow[]): UiMsg[] {
               full: row.content,
               open: false,
               mindmap,
+              wordcloud,
             });
             segments.push({ kind: "toolRef", toolCallId: tcId });
             j++;

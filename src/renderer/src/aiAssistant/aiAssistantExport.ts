@@ -195,6 +195,7 @@ export function buildAssistantChatExportJson(
           full: t.full,
           status: t.status,
           ...(t.mindmap ? { mindmap: t.mindmap } : {}),
+          ...(t.wordcloud ? { wordcloud: t.wordcloud } : {}),
         })),
       };
     }),

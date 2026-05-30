@@ -8,6 +8,7 @@ import {
   normalizeEmbeddingEndpoint,
   normalizeTokenPricePerMillion,
   normalizeTxt2ImgConfig,
+  normalizeWordcloudMaxWords,
 } from "@shared/aiTypes";
 import {
   SECRET_SLOT_AI_CHAT_API_KEY,
@@ -65,6 +66,7 @@ export function mergeAiConfigWithDefaults(raw: unknown): AIConfig {
     base.autoMindmapOnSummaryAndCharacters =
       o.autoMindmapOnSummaryAndCharacters;
   }
+  base.wordcloudMaxWords = normalizeWordcloudMaxWords(o.wordcloudMaxWords);
   base.txt2img = normalizeTxt2ImgConfig(o.txt2img);
   return base;
 }

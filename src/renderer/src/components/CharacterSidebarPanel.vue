@@ -48,6 +48,7 @@ import { pushEscBeforeModal } from "../utils/modalStack";
 import IconButton from "./IconButton.vue";
 import ReaderImageLightbox from "./ReaderImageLightbox.vue";
 import type ReaderMain from "./ReaderMain.vue";
+import { useCharacterRosterReorder } from "../composables/useCharacterRosterReorder";
 import { appConfirm } from "../services/appDialog";
 
 const props = withDefaults(
@@ -260,6 +261,37 @@ function ensureCardGridResizeObserver() {
   });
   cardGridResizeObserver.observe(grid);
 }
+
+const rosterReorderCan = computed(
+  () =>
+    hasOpenFile.value &&
+    !slideOpen.value &&
+    !generateOpen.value &&
+    !popoverCardId.value &&
+    !extracting.value &&
+    props.characterRoster.length > 1,
+);
+
+const rosterReorder = useCharacterRosterReorder({
+  roster: computed(() => props.characterRoster),
+  gridRef: cardGridRef,
+  canReorder: rosterReorderCan,
+  onCommit: (next) => {
+    emit("characterFileMetaPatch", { characterRoster: next });
+  },
+});
+
+const {
+  isDragging: rosterIsDragging,
+  draggingEntryId: rosterDraggingEntryId,
+  tiltEnabledFor: rosterTiltEnabledFor,
+  shouldSuppressFlip: rosterShouldSuppressFlip,
+  cancelActive: cancelRosterReorder,
+} = rosterReorder;
+
+watch([slideOpen, generateOpen, popoverCardId, extracting], () => {
+  cancelRosterReorder();
+});
 
 function onCardGridLayoutContextChange() {
   const ok =
@@ -651,6 +683,15 @@ watch(generateOpen, async (open, wasOpen) => {
   }
 });
 
+function rosterPortraitFingerprint(
+  roster: readonly CharacterRosterEntry[],
+): string {
+  return roster
+    .map((e) => `${e.id}\0${e.displayName.trim()}`)
+    .sort()
+    .join("\n");
+}
+
 async function refreshPortraitUrlForEntry(e: CharacterRosterEntry) {
   const name = e.displayName.trim();
   if (!name) {
@@ -662,8 +703,13 @@ async function refreshPortraitUrlForEntry(e: CharacterRosterEntry) {
     const st = await window.colorTxt.stat(p);
     if (st.isFile) {
       const url = await window.colorTxt.pathToReadableLocalUrl(p);
-      if (url) portraitUrlById[e.id] = withUrlCacheBust(url);
-      else delete portraitUrlById[e.id];
+      if (url) {
+        const existing = portraitUrlById[e.id];
+        if (existing && existing.split(/[?#]/)[0] === url.split(/[?#]/)[0]) {
+          return;
+        }
+        portraitUrlById[e.id] = withUrlCacheBust(url);
+      } else delete portraitUrlById[e.id];
     } else {
       delete portraitUrlById[e.id];
     }
@@ -684,13 +730,12 @@ watch(
       props.sessionFilePath,
       props.physicalReaderPath,
       props.characterPortraitCacheDir,
-      props.characterRoster,
+      rosterPortraitFingerprint(props.characterRoster),
     ] as const,
   () => {
     void refreshBookHash().then(() => refreshIndexReady());
     void refreshAllPortraitUrls();
   },
-  { deep: true },
 );
 
 watch(
@@ -988,6 +1033,14 @@ function getRetrieveBlockMessage(): string {
   return "";
 }
 
+/** 全书通用画风：已有内容则不再在 AI 检索时重复推断（用户清空后可再次生成） */
+function hasBookStyleForRetrieve(): boolean {
+  return Boolean(
+    props.characterBookStyle?.stylePrefixZh?.trim() ||
+      draftStylePrefix.value.trim(),
+  );
+}
+
 async function onRetrieve() {
   if (extracting.value || isRetrieveIndexBuilding.value) return;
   slideError.value = "";
@@ -1060,25 +1113,28 @@ async function onRetrieve() {
     absorbRetrieveTokenUsage(ok);
     retrieveTokenUsageShown.value = true;
 
-    const title = sessionBookTitle.value.trim();
-    const inf = await window.colorTxt.ai.portraitInferBookStyle({
-      bookHash: bookHash.value,
-      ...(title ? { fileTitle: title } : {}),
-      spoilerSafe: spoilerSafe.value,
-      activeChapterIdx: props.activeChapterIdx,
-      retrieveSessionId,
-    });
-    if (!("error" in inf)) {
-      absorbRetrieveTokenUsage(inf);
-      const nextStyle: CharacterBookStylePersisted = {
-        stylePrefixZh: inf.style_sd_prefix_zh.trim(),
-        styleNoteZh: inf.note_zh.trim(),
-        updatedAt: Date.now(),
-      };
-      draftStylePrefix.value = nextStyle.stylePrefixZh;
-      draftStyleNote.value = nextStyle.styleNoteZh ?? "";
-      emit("characterFileMetaPatch", { characterBookStyle: nextStyle });
+    if (!hasBookStyleForRetrieve()) {
+      const title = sessionBookTitle.value.trim();
+      const inf = await window.colorTxt.ai.portraitInferBookStyle({
+        bookHash: bookHash.value,
+        ...(title ? { fileTitle: title } : {}),
+        spoilerSafe: spoilerSafe.value,
+        activeChapterIdx: props.activeChapterIdx,
+        retrieveSessionId,
+      });
+      if (!("error" in inf)) {
+        absorbRetrieveTokenUsage(inf);
+        const nextStyle: CharacterBookStylePersisted = {
+          stylePrefixZh: inf.style_sd_prefix_zh.trim(),
+          styleNoteZh: inf.note_zh.trim(),
+          updatedAt: Date.now(),
+        };
+        draftStylePrefix.value = nextStyle.stylePrefixZh;
+        draftStyleNote.value = nextStyle.styleNoteZh ?? "";
+        emit("characterFileMetaPatch", { characterBookStyle: nextStyle });
+      }
     }
+
     retrieveNoticeBanner.value = "";
   } catch (e) {
     if (!isPortraitRetrieveAbortError(e)) {
@@ -1393,21 +1449,37 @@ onBeforeUnmount(() => {
           <div v-if="characterRoster.length === 0" class="emptySlot">
             <div class="empty">当前文件暂无角色</div>
           </div>
-          <div v-else class="characterMainScroll">
-            <div ref="cardGridRef" class="cardGrid">
-              <CharacterRosterCard
-                v-for="row in characterRoster"
-                :key="row.id"
-                :entry="row"
-                :portrait-url="portraitUrlById[row.id] ?? null"
-                :flipped="!!flipped[row.id]"
-                :name-zoom="rosterNameZoom"
-                :texture-effect="characterCardTextureEffect"
-                :popover-open="popoverCardId === row.id"
-                @toggle-flip="toggleFlip(row.id)"
-                @edit="openEditSlide(row)"
-                @view-portrait="toggleCharacterCardPopover(row)"
-              />
+          <div
+            v-else
+            class="characterMainScroll"
+            :class="{ 'characterMainScroll--reorderLock': rosterIsDragging }"
+          >
+            <div
+              ref="cardGridRef"
+              class="cardGrid"
+              :class="{ 'cardGrid--reordering': rosterIsDragging }"
+            >
+              <div
+                v-for="entry in characterRoster"
+                :key="entry.id"
+                class="cardGridSlot"
+                :data-entry-id="entry.id"
+              >
+                <CharacterRosterCard
+                  :entry="entry"
+                  :portrait-url="portraitUrlById[entry.id] ?? null"
+                  :flipped="!!flipped[entry.id]"
+                  :name-zoom="rosterNameZoom"
+                  :texture-effect="characterCardTextureEffect"
+                  :popover-open="popoverCardId === entry.id"
+                  :tilt-enabled="rosterTiltEnabledFor(entry.id)"
+                  :reorder-dragging="rosterDraggingEntryId === entry.id"
+                  :suppress-flip-check="() => rosterShouldSuppressFlip(entry.id)"
+                  @toggle-flip="toggleFlip(entry.id)"
+                  @edit="openEditSlide(entry)"
+                  @view-portrait="toggleCharacterCardPopover(entry)"
+                />
+              </div>
             </div>
           </div>
         </div>
@@ -1897,6 +1969,48 @@ onBeforeUnmount(() => {
   align-items: start;
 }
 
+.cardGridSlot {
+  min-width: 0;
+  touch-action: pan-y;
+}
+
+.cardGrid--reordering .cardGridSlot:not(.cardGridSlot--ghost):not(.cardGridSlot--drag) {
+  transition: none;
+}
+
+.cardGrid--reordering .cardGridSlot {
+  touch-action: none;
+}
+
+.cardGridSlot--ghost,
+.cardGridSlot--drag {
+  transition: none;
+}
+
+.cardGridSlot--ghost {
+  box-sizing: border-box;
+  align-self: start;
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  transform: none !important;
+  border-radius: 8px;
+  border: 2px dashed color-mix(in srgb, var(--accent) 50%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.cardGridSlot--ghost > * {
+  display: none;
+}
+
+.cardGrid--reordering .cardShellWrap:hover,
+.cardGrid--reordering .cardShellWrap:focus-within {
+  z-index: 0;
+}
+
+.characterMainScroll--reorderLock {
+  user-select: none;
+}
+
 .cardGrid:has(.cardShell--popover) .cardShell:not(.cardShell--popover) {
   opacity: 0.42;
   transition: opacity 0.28s ease;
@@ -2372,6 +2486,49 @@ onBeforeUnmount(() => {
 </style>
 
 <style>
+/* 跟手拖动层由 Sortable 挂到 body，须全局样式 */
+.cardGridSlot--drag,
+.cardGridReleaseFlyer {
+  opacity: 1 !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
+.cardGridSlot--drag *,
+.cardGridReleaseFlyer * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
+.cardGridSlot--drag {
+  z-index: 10050;
+  pointer-events: none;
+  transition: none;
+}
+
+.cardGridSlot--drag > .cardShellWrap {
+  transform: scale(1);
+  transform-origin: center center;
+  filter: none;
+}
+
+.cardGridSlot--dropLanding {
+  box-sizing: border-box;
+  border-radius: 8px;
+  border: 2px dashed color-mix(in srgb, var(--accent) 50%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.cardGridSlot--dropLanding > .cardShellWrap {
+  visibility: hidden;
+}
+
+.cardGridReleaseTarget {
+  border-radius: 8px;
+  border: 2px dashed color-mix(in srgb, var(--accent) 50%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
 .charCardPopoverBackdrop {
   position: fixed;
   inset: 0;

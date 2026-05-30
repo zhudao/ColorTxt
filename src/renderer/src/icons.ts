@@ -6,6 +6,8 @@ import leaveFullscreenIcon from "./assets/leave_fullscreen.svg?raw";
 import paletteIcon from "./assets/palette.svg?raw";
 import moreIcon from "./assets/more.svg?raw";
 import mindmapIcon from "./assets/mindmap.svg?raw";
+import wordcloudIcon from "./assets/wordcloud.svg?raw";
+import wordcloudAngleIcon from "./assets/wordcloud_angle.svg?raw";
 import findIcon from "./assets/find.svg?raw";
 import regExpIcon from "./assets/RegExp.svg?raw";
 import githubIcon from "./assets/GitHub.svg?raw";
@@ -39,6 +41,7 @@ import chapterListIcon from "./assets/chapter_list.svg?raw";
 import highlightMarkIcon from "./assets/highlight.svg?raw";
 import clearIcon from "./assets/clear.svg?raw";
 import addIcon from "./assets/add.svg?raw";
+import moveIcon from "./assets/move.svg?raw";
 import closeIcon from "./assets/close.svg?raw";
 import ascIcon from "./assets/asc.svg?raw";
 import descIcon from "./assets/desc.svg?raw";
@@ -60,6 +63,8 @@ import failIcon from "./assets/fail.svg?raw";
 import stopIcon from "./assets/stop.svg?raw";
 import thinkingPulseIcon from "./assets/thinking_pulse.svg?raw";
 import foldChevronIcon from "./assets/fold_chevron.svg?raw";
+import foldIcon from "./assets/fold.svg?raw";
+import expandIcon from "./assets/expand.svg?raw";
 import jumpBottomIcon from "./assets/jump_bottom.svg?raw";
 import characterIcon from "./assets/character.svg?raw";
 import genderMaleIcon from "./assets/male.svg?raw";
@@ -79,6 +84,10 @@ export const icons = {
   more: moreIcon,
   /** 思维导图面板标题 */
   mindmap: mindmapIcon,
+  /** 词云面板标题 */
+  wordcloud: wordcloudIcon,
+  /** 词云角度布局 */
+  wordcloudAngle: wordcloudAngleIcon,
   find: findIcon,
   regExp: regExpIcon,
   github: githubIcon,
@@ -112,6 +121,8 @@ export const icons = {
   highlightMark: highlightMarkIcon,
   clear: clearIcon,
   add: addIcon,
+  /** 列表拖动排序手柄 */
+  move: moveIcon,
   close: closeIcon,
   asc: ascIcon,
   desc: descIcon,
@@ -127,7 +138,7 @@ export const icons = {
   view: viewIcon,
   viewOff: viewOffIcon,
   refresh: refreshIcon,
-  /** 思维导图「复原视图」 */
+  /** 思维导图 / 词云「复位」 */
   reset: resetIcon,
   unknow: unknowIcon,
   fail: failIcon,
@@ -136,6 +147,10 @@ export const icons = {
   thinkingPulse: thinkingPulseIcon,
   /** 折叠面板标题右侧 chevron（默认向下，展开时旋转为向上） */
   foldChevron: foldChevronIcon,
+  /** 思维导图「全部收起」 */
+  fold: foldIcon,
+  /** 思维导图「全部展开」 */
+  expand: expandIcon,
   jumpBottom: jumpBottomIcon,
   character: characterIcon,
   genderMale: genderMaleIcon,
