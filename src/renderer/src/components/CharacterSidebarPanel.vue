@@ -692,7 +692,10 @@ function rosterPortraitFingerprint(
     .join("\n");
 }
 
-async function refreshPortraitUrlForEntry(e: CharacterRosterEntry) {
+async function refreshPortraitUrlForEntry(
+  e: CharacterRosterEntry,
+  options?: { force?: boolean },
+) {
   const name = e.displayName.trim();
   if (!name) {
     delete portraitUrlById[e.id];
@@ -705,7 +708,11 @@ async function refreshPortraitUrlForEntry(e: CharacterRosterEntry) {
       const url = await window.colorTxt.pathToReadableLocalUrl(p);
       if (url) {
         const existing = portraitUrlById[e.id];
-        if (existing && existing.split(/[?#]/)[0] === url.split(/[?#]/)[0]) {
+        if (
+          !options?.force &&
+          existing &&
+          existing.split(/[?#]/)[0] === url.split(/[?#]/)[0]
+        ) {
           return;
         }
         portraitUrlById[e.id] = withUrlCacheBust(url);
@@ -1206,6 +1213,7 @@ async function onSaveSlide() {
     );
   }
 
+  let portraitCommitted = false;
   const sk = portraitEditSessionKey.value.trim();
   if (sk) {
     try {
@@ -1221,6 +1229,7 @@ async function onSaveSlide() {
           slideError.value = cp.error ?? "立绘保存失败";
           return;
         }
+        portraitCommitted = true;
         try {
           await window.colorTxt.removePath(draftPath);
         } catch {
@@ -1236,6 +1245,18 @@ async function onSaveSlide() {
     characterBookStyle: stylePatch,
     characterRoster: nextRoster,
   });
+
+  if (portraitCommitted) {
+    const savedId =
+      editingId.value ?? nextRoster[nextRoster.length - 1]?.id ?? "";
+    const savedEntry = savedId
+      ? nextRoster.find((r) => r.id === savedId)
+      : undefined;
+    if (savedEntry) {
+      await refreshPortraitUrlForEntry(savedEntry, { force: true });
+    }
+  }
+
   closeSlide();
 }
 
