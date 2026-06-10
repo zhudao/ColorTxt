@@ -12,6 +12,7 @@ import {
   buildChaptersFromMarkdownPhysicalLines,
 } from "../markdown/markdownChapter";
 import { buildChaptersFromReaderDisplayText } from "../reader/readerDisplayPipeline";
+import type { ReaderViewportRestoreAnchor } from "../reader/readerViewportAnchor";
 import type { useTxtStreamPipeline } from "./useTxtStreamPipeline";
 
 type Stream = ReturnType<typeof useTxtStreamPipeline>;
@@ -46,6 +47,14 @@ export function useAppChapterNavigation(deps: {
   showChapterRulePanel: Ref<boolean>;
   sidebarTab: Ref<import("../constants/readerSidebarTab").ReaderSidebarTab>;
   persistSettings: () => void;
+  compressBlankLines: Ref<boolean>;
+  leadIndentFullWidth: Ref<boolean>;
+  captureViewportRestoreAnchor: () => ReaderViewportRestoreAnchor | null;
+  captureViewportAnchorPhysicalLine: () => number;
+  withChapterListScrollSuppressed: <T>(
+    fn: () => Promise<T> | T,
+  ) => Promise<T>;
+  onAfterChapterListRefresh?: () => void | Promise<void>;
 }) {
   function jumpToChapter(ch: Chapter) {
     deps.readerRef.value?.jumpToLine(ch.lineNumber);
@@ -156,6 +165,11 @@ export function useAppChapterNavigation(deps: {
     );
   }
 
+  async function refreshChapterListAfterDisplayChange() {
+    refreshChapterListFromReader();
+    await deps.onAfterChapterListRefresh?.();
+  }
+
   async function applyChapterMatchRules(payload: {
     rules: ChapterMatchRule[];
   }) {
@@ -165,7 +179,29 @@ export function useAppChapterNavigation(deps: {
       deps.chapterRuleErrorText.value = "";
       deps.persistSettings();
       if (deps.currentFile.value) {
-        refreshChapterListFromReader();
+        const reapplyReaderDisplay =
+          !deps.readerEditMode.value &&
+          (deps.compressBlankLines.value || deps.leadIndentFullWidth.value);
+        if (reapplyReaderDisplay) {
+          await deps.withChapterListScrollSuppressed(async () => {
+            const anchor =
+              deps.captureViewportRestoreAnchor() ?? {
+                physicalLine: deps.captureViewportAnchorPhysicalLine(),
+                wrappedLineIndex: 0,
+              };
+            const ok =
+              await deps.stream.applyReaderDisplayFromPhysicalLines(anchor);
+            if (!ok) {
+              deps.chapterRuleErrorText.value =
+                "章节规则已保存，但重新格式化展示正文失败";
+              refreshChapterListFromReader();
+              return;
+            }
+            await refreshChapterListAfterDisplayChange();
+          });
+        } else {
+          refreshChapterListFromReader();
+        }
       }
       deps.sidebarTab.value = "chapters";
       deps.showChapterRulePanel.value = false;

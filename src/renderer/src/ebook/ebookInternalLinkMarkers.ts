@@ -206,6 +206,22 @@ function replaceAMarkersWithVisibleLabel(
   return s;
 }
 
+/**
+ * 与阅读器 `applyEbookInternalLinkMarkers` 去掉 `<<ID:…>>` / `<<A:…|…>>` 后的可见行正文一致。
+ * 格式化阶段章节匹配须用此结果：源物理行在写入 Monaco 前常仍含电子书内链标记。
+ */
+export function lineTextAfterStrippingEbookMarkers(rawLine: string): string {
+  if (!rawLine.includes(MARK_ID) && !rawLine.includes(MARK_A)) {
+    return rawLine.replace(/\r\n/g, "\n").split("\n")[0] ?? rawLine;
+  }
+  const idToPhysicalLine = new Map<string, number>();
+  const linkOccurrences: EbookInternalLinkOccurrence[] = [];
+  let line = rawLine.replace(/\r\n/g, "\n").split("\n")[0] ?? "";
+  line = stripIdMarkersFromLine(line, 1, idToPhysicalLine);
+  line = replaceAMarkersWithVisibleLabel(line, 1, linkOccurrences);
+  return line;
+}
+
 export type StripEbookMarkersResult = {
   text: string;
   /** 与输入按 `\n` 分行后逐行对应，供阅读器用 `applyEdits` 替换行内标记而不 `setValue` 整文 */

@@ -5,6 +5,10 @@ import {
   type Chapter,
 } from "../chapter";
 import {
+  collectLeadingEbookALabelsFromLine,
+  lineTextAfterStrippingEbookMarkers,
+} from "../ebook/ebookInternalLinkMarkers";
+import {
   collectQualifiedMarkdownChapterTitlePhysicalLines,
   detectMarkdownHeading,
 } from "../markdown/markdownChapter";
@@ -36,6 +40,27 @@ export type ReaderDisplayFormatResult = {
 
 function normalizeNewlines(text: string): string {
   return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
+function isEbookFalseChapterTitleFromLeadingLink(
+  title: string,
+  leadingLabels: readonly string[],
+): boolean {
+  const t = title.trim();
+  return leadingLabels.some((lab) => {
+    const L = lab.trim();
+    return L.length > 0 && t.startsWith(L);
+  });
+}
+
+/** 物理行章节匹配：先去掉电子书 `<<ID:…>>` / `<<A:…>>`，并排除链内假章节 */
+function detectChapterTitleFromPhysicalLine(rawLine: string): string | null {
+  const visible = lineTextAfterStrippingEbookMarkers(rawLine);
+  const title = detectChapterTitle(visible);
+  if (!title) return null;
+  const leadingLabels = collectLeadingEbookALabelsFromLine(rawLine);
+  if (isEbookFalseChapterTitleFromLeadingLink(title, leadingLabels)) return null;
+  return title;
 }
 
 function lineForReaderDisplay(
@@ -73,7 +98,7 @@ function resolvePhysicalLineDisplay(
       }
     }
   } else {
-    isChapterTitleLine = detectChapterTitle(rawLine) != null;
+    isChapterTitleLine = detectChapterTitleFromPhysicalLine(rawLine) != null;
   }
   const shown = lineForReaderDisplay(
     content,
@@ -111,7 +136,7 @@ export function collectQualifiedChapterTitlePhysicalLines(
   for (const rawLine of physicalLines) {
     physicalLine += 1;
     if (isBlankPhysicalLineContent(rawLine)) continue;
-    const title = detectChapterTitle(rawLine);
+    const title = detectChapterTitleFromPhysicalLine(rawLine);
     if (title) {
       sections.push({ titlePhysicalLine: physicalLine, charCount: 0 });
       currentIdx = sections.length - 1;

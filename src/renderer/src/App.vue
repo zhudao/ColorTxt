@@ -1230,6 +1230,15 @@ const chapterNav = useAppChapterNavigation({
   showChapterRulePanel,
   sidebarTab,
   persistSettings,
+  compressBlankLines,
+  leadIndentFullWidth,
+  captureViewportRestoreAnchor,
+  captureViewportAnchorPhysicalLine,
+  withChapterListScrollSuppressed,
+  onAfterChapterListRefresh: async () => {
+    await nextTick();
+    await readerSidebarRef.value?.centerActiveChapterInList?.(false);
+  },
 });
 
 afterStreamFullTextInstalled = async () => {
@@ -1239,7 +1248,8 @@ afterStreamFullTextInstalled = async () => {
   const imgAnchors = await readerRef.value?.applyEmbeddedImageAnchors(
     physicalReaderPath.value,
   );
-  readerRef.value?.applyEbookInternalLinkMarkers?.();
+  // 插图删行会改变 Monaco 行数；压缩空行时须先同步 display↔physical 映射，再解析 <<ID:…>> / <<A:…>>，
+  // 否则锚点 id→物理行与点击跳转 physical→显示行会错位。
   if (
     imgAnchors?.deletedOriginalLineNumbersDesc?.length &&
     compressBlankLines.value
@@ -1248,6 +1258,7 @@ afterStreamFullTextInstalled = async () => {
       imgAnchors.deletedOriginalLineNumbersDesc,
     );
   }
+  readerRef.value?.applyEbookInternalLinkMarkers?.();
   stream.resyncMirrorFromReader();
 };
 
