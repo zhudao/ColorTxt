@@ -1,6 +1,26 @@
 import JSZip from "jszip";
-import type { ColorTxtArtifacts } from "./ebookTypes";
-import { escapeEbookMarkerPayload } from "./ebookInternalLinkMarkers";
+import type { EbookMarkdownArtifacts } from "./ebookTypes";
+import {
+  EbookMarkdownFragmentRegistry,
+  formatMdBlockImage,
+  formatMdExternalLink,
+  formatMdInternalLink,
+  isMdExternalLinkHref,
+  mdInternalLinkForLogicalTarget,
+  spanAnchorForLogicalTarget,
+} from "./ebookMarkdownEmit";
+import { injectEpubTocAnchorsIntoLines } from "./ebookTocAnchorInjection";
+import {
+  type EmbeddedTocEntry,
+} from "./ebookTocTypes";
+import {
+  anchorContainsOnlyFb2Image,
+  findInternalLinkAnchorParent,
+  getElementLinkHref,
+  resolveLinkIconHoverTip,
+  resolveLinkIconVisibleLabel,
+  shouldTreatImgAsLinkIcon,
+} from "./ebookLinkIconHeuristics";
 
 function extFromContentType(ct: string): string {
   const t = ct.split(";")[0]!.trim().toLowerCase();
@@ -31,7 +51,52 @@ type Fb2ImageCtx = {
   imageWrites: Array<{ relativePath: string; data: ArrayBuffer }>;
   usedRelKeys: Set<string>;
   idToRel: Map<string, string>;
+  fragments: EbookMarkdownFragmentRegistry;
 };
+
+function fb2SpanAnchor(
+  ctx: Fb2ImageCtx,
+  outputBase: string,
+  idAttr: string,
+): string {
+  return spanAnchorForLogicalTarget(
+    ctx.fragments,
+    `${outputBase}#${idAttr}`,
+    idAttr,
+  );
+}
+
+function appendFb2MdLink(
+  acc: { text: string },
+  ctx: Fb2ImageCtx,
+  logicalTargetId: string,
+  opts: {
+    label: string;
+    iconRel?: string;
+    title?: string;
+    alt?: string;
+  },
+): void {
+  const tid = logicalTargetId.trim();
+  if (!tid) return;
+  if (!tid.includes("#")) {
+    acc.text += formatMdInternalLink({
+      label: opts.label,
+      fragment: tid,
+      iconRel: opts.iconRel,
+      title: opts.title,
+      alt: opts.alt,
+    });
+    return;
+  }
+  acc.text += mdInternalLinkForLogicalTarget(ctx.fragments, tid, {
+    label: opts.label,
+    iconRel: opts.iconRel,
+    title: opts.title,
+    alt: opts.alt,
+    preferredFrag: tid.slice(tid.lastIndexOf("#") + 1),
+  });
+}
 
 function getFb2ImageHref(el: Element): string {
   const xlink = el.getAttributeNS("http://www.w3.org/1999/xlink", "href")?.trim();
@@ -40,25 +105,21 @@ function getFb2ImageHref(el: Element): string {
   return href ?? "";
 }
 
-function pushImageLineForBinaryId(
+function exportImageRelForBinaryId(
   href: string,
   binaryById: Map<string, ArrayBuffer>,
   idToContentType: Map<string, string>,
   ctx: Fb2ImageCtx,
-  out: string[],
-): void {
-  if (!href.startsWith("#")) return;
+): string | null {
+  if (!href.startsWith("#")) return null;
   const id = href.slice(1).trim();
-  if (!id) return;
+  if (!id) return null;
 
   const existing = ctx.idToRel.get(id);
-  if (existing) {
-    out.push(`<<IMG:${escapeEbookMarkerPayload(existing)}>>`);
-    return;
-  }
+  if (existing) return existing;
 
   const data = binaryById.get(id);
-  if (!data || data.byteLength === 0) return;
+  if (!data || data.byteLength === 0) return null;
 
   const ct = idToContentType.get(id) ?? "";
   const ext = extFromContentType(ct);
@@ -81,7 +142,18 @@ function pushImageLineForBinaryId(
   ctx.usedRelKeys.add(rel.toLowerCase());
   ctx.idToRel.set(id, rel);
   ctx.imageWrites.push({ relativePath: rel, data });
-  out.push(`<<IMG:${escapeEbookMarkerPayload(rel)}>>`);
+  return rel;
+}
+
+function pushImageLineForBinaryId(
+  href: string,
+  binaryById: Map<string, ArrayBuffer>,
+  idToContentType: Map<string, string>,
+  ctx: Fb2ImageCtx,
+  out: string[],
+): void {
+  const rel = exportImageRelForBinaryId(href, binaryById, idToContentType, ctx);
+  if (rel) out.push(formatMdBlockImage(rel));
 }
 
 function flushAccParagraph(acc: { text: string }, out: string[]): void {
@@ -101,7 +173,7 @@ function walkFb2Inline(
 ): void {
   const selfId = el.getAttribute("id")?.trim() || el.getAttribute("name")?.trim();
   if (selfId) {
-    acc.text += `<<ID:${escapeEbookMarkerPayload(`${outputBase}#${selfId}`)}>>`;
+    acc.text += fb2SpanAnchor(ctx, outputBase, selfId);
   }
 
   for (const node of el.childNodes) {
@@ -113,6 +185,35 @@ function walkFb2Inline(
     const child = node as Element;
     const tag = child.localName.toLowerCase();
     if (tag === "image") {
+      if (shouldTreatImgAsLinkIcon({ imgEl: child })) {
+        const anchor = findInternalLinkAnchorParent(child);
+        if (anchor) {
+          const href = getElementLinkHref(anchor);
+          if (href.startsWith("#")) {
+            const frag = href.slice(1).trim();
+            if (frag) {
+              const tid = `${outputBase}#${frag}`;
+              const imgHref = getFb2ImageHref(child);
+              const rel = exportImageRelForBinaryId(
+                imgHref,
+                binaryById,
+                idToContentType,
+                ctx,
+              );
+              const label = resolveLinkIconVisibleLabel(child, anchor);
+              const hoverTip = resolveLinkIconHoverTip(child, anchor);
+              const slash = hoverTip.indexOf("/");
+              appendFb2MdLink(acc, ctx, tid, {
+                label,
+                iconRel: rel ?? undefined,
+                title: slash >= 0 ? hoverTip.slice(0, slash) : hoverTip,
+                alt: slash >= 0 ? hoverTip.slice(slash + 1) : undefined,
+              });
+              continue;
+            }
+          }
+        }
+      }
       flushAccParagraph(acc, out);
       const href = getFb2ImageHref(child);
       pushImageLineForBinaryId(href, binaryById, idToContentType, ctx, out);
@@ -121,21 +222,41 @@ function walkFb2Inline(
     if (tag === "a") {
       const anchorKey = child.getAttribute("id")?.trim() || child.getAttribute("name")?.trim();
       if (anchorKey) {
-        acc.text += `<<ID:${escapeEbookMarkerPayload(`${outputBase}#${anchorKey}`)}>>`;
+        acc.text += fb2SpanAnchor(ctx, outputBase, anchorKey);
       }
-      const href =
-        child.getAttributeNS("http://www.w3.org/1999/xlink", "href") ||
-        child.getAttribute("href") ||
-        "";
+      const href = getElementLinkHref(child);
+      const onlyImage = anchorContainsOnlyFb2Image(child);
+      if (onlyImage && href.startsWith("#")) {
+        const frag = href.slice(1).trim();
+        if (frag) {
+          const tid = `${outputBase}#${frag}`;
+          const imgHref = getFb2ImageHref(onlyImage);
+          const rel = exportImageRelForBinaryId(
+            imgHref,
+            binaryById,
+            idToContentType,
+            ctx,
+          );
+          const label = resolveLinkIconVisibleLabel(onlyImage, child);
+          const hoverTip = resolveLinkIconHoverTip(onlyImage, child);
+          const slash = hoverTip.indexOf("/");
+          appendFb2MdLink(acc, ctx, tid, {
+            label,
+            iconRel: rel ?? undefined,
+            title: slash >= 0 ? hoverTip.slice(0, slash) : hoverTip,
+            alt: slash >= 0 ? hoverTip.slice(slash + 1) : undefined,
+          });
+          continue;
+        }
+      }
       const label = (child.textContent ?? "").replace(/\s+/g, " ").trim();
-      if (/^https?:\/\//i.test(href)) {
-        acc.text += label.length > 0 ? `${label}（${href}）` : href;
+      if (isMdExternalLinkHref(href)) {
+        acc.text += formatMdExternalLink({ label, url: href });
       } else if (href.startsWith("#")) {
         const frag = href.slice(1).trim();
         if (frag) {
           const tid = `${outputBase}#${frag}`;
-          const vis = label || "·";
-          acc.text += `<<A:${escapeEbookMarkerPayload(vis)}|${escapeEbookMarkerPayload(tid)}>>`;
+          appendFb2MdLink(acc, ctx, tid, { label: label || "" });
         } else if (label) {
           acc.text += label;
         }
@@ -173,6 +294,42 @@ function collectBinaryMaps(doc: Document): {
   return { binaryById, idToContentType };
 }
 
+function collectFb2EmbeddedTocEntries(
+  body: Element,
+  outputBase: string,
+): EmbeddedTocEntry[] {
+  const out: EmbeddedTocEntry[] = [];
+  const walkSection = (el: Element, depth: number) => {
+    const ln = el.localName.toLowerCase();
+    if (ln !== "section") {
+      for (const c of el.children) walkSection(c as Element, depth);
+      return;
+    }
+    const sid = el.getAttribute("id")?.trim() || el.getAttribute("name")?.trim();
+    let title: string | null = null;
+    for (const c of el.children) {
+      if (c.localName.toLowerCase() === "title") {
+        title = (c.textContent ?? "").replace(/\s+/g, " ").trim() || null;
+        break;
+      }
+    }
+    if (title && sid) {
+      out.push({
+        title,
+        targetId: `${outputBase}#${sid}`,
+        level: depth,
+      });
+    }
+    for (const c of el.children) {
+      if (c.localName.toLowerCase() === "section") {
+        walkSection(c as Element, depth + 1);
+      }
+    }
+  };
+  for (const c of body.children) walkSection(c as Element, 0);
+  return out;
+}
+
 /** 文档序遍历 body：`section` 的 id 单独成行，再处理 title/subtitle/p/v */
 function walkFb2Body(
   body: Element,
@@ -187,7 +344,7 @@ function walkFb2Body(
     if (ln === "section") {
       const sid = el.getAttribute("id")?.trim() || el.getAttribute("name")?.trim();
       if (sid) {
-        outLines.push(`<<ID:${escapeEbookMarkerPayload(`${outputBase}#${sid}`)}>>`);
+        outLines.push(fb2SpanAnchor(ctx, outputBase, sid));
       }
       for (const c of el.children) walk(c as Element);
       return;
@@ -207,7 +364,7 @@ export async function convertFb2ToArtifacts(
   buffer: ArrayBuffer,
   isFbz: boolean,
   outputBase: string,
-): Promise<ColorTxtArtifacts> {
+): Promise<EbookMarkdownArtifacts> {
   let xmlText: string;
 
   if (isFbz) {
@@ -235,22 +392,39 @@ export async function convertFb2ToArtifacts(
   const { binaryById, idToContentType } = collectBinaryMaps(doc);
 
   const imagesFolderRel = `${outputBase}.Images`;
+  const fragments = new EbookMarkdownFragmentRegistry();
   const ctx: Fb2ImageCtx = {
     imagesFolderRel,
     imageWrites: [],
     usedRelKeys: new Set(),
     idToRel: new Map(),
+    fragments,
   };
 
   const outLines: string[] = [];
   if (title) {
-    outLines.push(title, "");
+    outLines.push(`# ${title}`, "");
   }
 
   walkFb2Body(body, binaryById, idToContentType, ctx, outLines, outputBase);
 
+  const tocEntries = collectFb2EmbeddedTocEntries(body, outputBase);
+  const sectionRanges = [
+    {
+      stem: outputBase,
+      startLine: 0,
+      endLine: Math.max(0, outLines.length - 1),
+    },
+  ];
+  injectEpubTocAnchorsIntoLines(
+    outLines,
+    sectionRanges,
+    tocEntries,
+    fragments,
+  );
+
   const utf8 = outLines.join("\n").replace(/\n{3,}/g, "\n\n").trim() + "\n";
-  const out: ColorTxtArtifacts = { utf8 };
+  const out: EbookMarkdownArtifacts = { utf8 };
   if (ctx.imageWrites.length > 0) out.imageWrites = ctx.imageWrites;
   return out;
 }

@@ -39,8 +39,12 @@ import SwitchToggle from "./SwitchToggle.vue";
 import { icons } from "../icons";
 import { appAlert } from "../services/appDialog";
 import { resolveDefaultCharacterPortraitCacheDirSync } from "../utils/defaultCacheDirs";
+import { MAX_AI_ENDPOINT_PROFILES } from "@shared/aiEndpointProfiles";
+import { useTxt2ImgProfileDraft } from "../composables/useAiEndpointProfileDraft";
+import AiConfigProfileToolbar from "./AiConfigProfileToolbar.vue";
 
 const modelValue = defineModel<AIConfig>({ required: true });
+const txt2imgProfileDraft = useTxt2ImgProfileDraft(modelValue);
 const characterPortraitCacheDir = defineModel<string>(
   "characterPortraitCacheDir",
   { required: true },
@@ -563,6 +567,33 @@ async function runTxt2imgConnectionTest(): Promise<ConnectionTestResult | null> 
   if (r.ok && r.op === "testConnection") return { ok: true };
   return { ok: false, error: r.ok ? "连接失败" : r.error || "连接失败" };
 }
+
+const txt2imgProfileToolbarProfiles = computed(
+  () => txt2imgProfileDraft.profileSelectItems.value,
+);
+const txt2imgProfileToolbarEditingId = computed(
+  () => txt2imgProfileDraft.editingId.value,
+);
+const txt2imgProfileToolbarDisplayName = computed(
+  () => txt2imgProfileDraft.editingDisplayName.value,
+);
+const txt2imgProfileToolbarPlaceholder = computed(
+  () => txt2imgProfileDraft.editingProviderLabel.value,
+);
+
+function onTxt2ImgProfileEditingIdChange(id: string) {
+  txt2imgProfileDraft.selectEditingProfile(id);
+}
+
+function initTxt2ImgProfiles() {
+  txt2imgProfileDraft.initFromConfig();
+}
+
+defineExpose({
+  finalizeTxt2ImgProfiles: txt2imgProfileDraft.finalizeBeforeSave,
+  initTxt2ImgProfiles,
+  resetCurrentTxt2ImgProfile: txt2imgProfileDraft.resetCurrentProfileTxt2img,
+});
 </script>
 
 <template>
@@ -581,6 +612,21 @@ async function runTxt2imgConnectionTest(): Promise<ConnectionTestResult | null> 
     </section>
 
     <template v-if="modelValue.txt2img.enabled">
+      <section class="aiSection aiSection--compact">
+        <h3 class="aiSectionTitle">配置方案</h3>
+        <AiConfigProfileToolbar
+          :profiles="txt2imgProfileToolbarProfiles"
+          :editing-id="txt2imgProfileToolbarEditingId"
+          :display-name="txt2imgProfileToolbarDisplayName"
+          :placeholder="txt2imgProfileToolbarPlaceholder"
+          :max-profiles="MAX_AI_ENDPOINT_PROFILES"
+          @update:editing-id="onTxt2ImgProfileEditingIdChange"
+          @add="txt2imgProfileDraft.addProfile()"
+          @rename="void txt2imgProfileDraft.renameProfile()"
+          @delete="txt2imgProfileDraft.deleteProfile()"
+        />
+      </section>
+
       <section class="aiSection">
         <h3 class="aiSectionTitle">文生图 API 设置</h3>
         <div class="settingsRow">

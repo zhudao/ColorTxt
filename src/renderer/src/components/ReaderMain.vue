@@ -13,6 +13,7 @@ import kingHwaFontUrl from "../assets/KingHwa_OldSong1.0.ttf?url";
 import {
   type ChapterStickyLine,
   ensureStickyChapterBarClickDisabled,
+  refreshStickyChapterScrollWidget,
   registerChapterStickyScrollProviders,
 } from "../monaco/chapterStickyScroll";
 import {
@@ -27,8 +28,11 @@ import {
   removeViewZonesById,
   type ReplaceImgAnchorsResult,
 } from "../monaco/readerImageViewZones";
-import { expandMarkdownImagesInPlainText } from "../markdown/markdownImages";
-import { formatMarkdownHeadingLineForDisplay } from "../markdown/markdownChapter";
+import { collectBlockMarkdownImageLines } from "../markdown/markdownImages";
+import {
+  atxHeadingPrefixLength,
+  formatMarkdownHeadingLineForDisplay,
+} from "../markdown/markdownChapter";
 import {
   READER_EDITOR_DEFAULT_FONT_FAMILY,
   READER_EDITOR_DEFAULT_FONT_SIZE,
@@ -69,7 +73,11 @@ import {
   positionFromClientPoint,
   clientXWithinSingleLineModelRange,
 } from "../reader/readerEbookPointer";
-import { lookupEbookAnchorPhysicalLine } from "../reader/ebookAnchorLookup";
+import {
+  buildEbookAnchorLookupCache,
+  lookupEbookAnchorPhysicalLineCached,
+  type EbookAnchorLookupCache,
+} from "../reader/ebookAnchorLookup";
 import {
   defaultChapterMinCharCount,
   defaultCompressBlankLines,
@@ -93,7 +101,23 @@ import {
   READER_HL_FLOAT_ROOT_Z_INDEX,
   subscribeModalStackChange,
 } from "../utils/modalStack";
-import { stripEbookIdAndAMarkersFromText } from "../ebook/ebookInternalLinkMarkers";
+import {
+  isAllowedMdExternalUrl,
+  lineContainsMdStripLink,
+  mdLinkDecorationHoverMessage,
+  extractMdFootnoteHoverTextFromLine,
+  shiftMdInternalLinkSidecarDisplayLines,
+  shiftMdLinkHitColumns,
+  type MdCompactLinkHit,
+  type MdInternalLinkSidecar,
+} from "../markdown/markdownLinkShared";
+import { stripMdInternalLinksFromText } from "../markdown/markdownInternalLinks";
+import { yieldToUi } from "../ebook/yieldToUi";
+import {
+  dirnameFs,
+  joinFs,
+  normalizeRelativeToFsStyle,
+} from "../ebook/pathUtils";
 import { appAlert } from "../services/appDialog";
 
 /** 与 `READER_HL_FLOAT_ROOT_Z_INDEX` 同步；低于 `AppModal` 蒙层（6000） */
@@ -138,14 +162,31 @@ const imageViewZoneIds = ref<string[]>([]);
 let imageViewZoneScrollRenderRaf: number | null = null;
 /** 电子书内链装饰 id（`deltaDecorations` 返回） */
 let ebookInternalLinkDecorationIds: string[] = [];
+const EBOOK_LINK_ICON_STYLE_ID = "reader-ebook-link-icon-styles";
 /** 锚点 id → 物理行（strip 后、与正文行号一致） */
 const ebookAnchorIdToPhysicalLine = shallowRef<Map<string, number>>(new Map());
-/** 行首起经多段 `<<A:…>>`（中间可夹任意字符）收集的链内文案；重建章节时若标题以前缀命中则跳过 */
+let ebookAnchorLookupCache: EbookAnchorLookupCache | null = null;
+/** 行首起经多段 MD 内链（中间可夹任意字符）收集的链内文案；重建章节时若标题以前缀命中则跳过 */
 const ebookLeadingLinkLabelsByDisplayLine = shallowRef<
   ReadonlyMap<number, readonly string[]>
 >(new Map());
-type EbookLinkHit = { range: monaco.Range; targetId: string };
-const ebookInternalLinkHits = shallowRef<EbookLinkHit[]>([]);
+const ebookInternalLinkHitCount = ref(0);
+/** 按 Monaco 行号索引的内链命中，避免大文件点击时线性扫描全部链接 */
+const ebookInternalLinkHitsByLine = shallowRef<
+  Map<number, MdCompactLinkHit[]>
+>(new Map());
+/** 视口外缓冲行数：仅在此范围内向 Monaco 注册内链装饰（点击索引仍为全书） */
+const EBOOK_LINK_VIEWPORT_DECORATION_BUFFER_LINES = 80;
+const EBOOK_LINK_VIEWPORT_DECOR_SYNC_MS = 48;
+let ebookLinkDecorIconRelToClass = new Map<string, string>();
+let ebookLinkViewportDecorSyncTimer: ReturnType<typeof setTimeout> | null =
+  null;
+let ebookLinkViewportDecorLastKey = "";
+let ebookLinkScrollDecorDisposable: monaco.IDisposable | null = null;
+/** 须改动的行数超过此阈值时用单次全量 `applyEdits` 代替逐行替换（编辑态回退路径） */
+const MD_LINK_BULK_STRIP_EDIT_THRESHOLD = 512;
+/** 格式化阶段预剥离的内链侧车；插图删行后须 shift 再安装 */
+let pendingEbookSidecar: MdInternalLinkSidecar | null = null;
 /** 选区靠近阅读区上缘时为 true：笔尖与色盘改为在选区下方展开 */
 const hlFloatOpenDownward = ref(false);
 
@@ -164,6 +205,7 @@ let currentFontFamily = READER_EDITOR_DEFAULT_FONT_FAMILY;
 let chaptersSnapshot: ChapterStickyLine[] = [];
 /** `registerChapterStickyScrollProviders` 注入后赋值；`setChapters` 末尾触发折叠失效以刷新粘性条 */
 let notifyChapterStickyFoldingRanges: (() => void) | null = null;
+let stickyChapterScrollRefreshRaf: number | null = null;
 
 /** 上次已写入的章节标题行内装饰对应的「章节行号序列」键；相同时可跳过 `collection.set`（仅着色，不含留白） */
 let lastChapterTitleDecorationsLineKey = "";
@@ -208,10 +250,10 @@ const props = withDefaults(
     highlightWordsByIndexBookOnly?: HighlightWordsByIndex;
     /** 已打开文件路径；为空时不显示选区高亮入口 */
     readerFilePath?: string | null;
-    /** 电子书 `<<ID>>` / `<<A>>`：物理行号 → Monaco 显示行（与流式滤空一致） */
+    /** 电子书 MD 锚点/内链：物理行号 → Monaco 显示行（与流式滤空一致） */
     ebookAnchorPhysicalToDisplay?: (physicalLine: number) => number;
     /**
-     * 压缩空行时：`stripEbook…` 按 Monaco 行序记的「行号」实为显示行，需先映回源物理行再与 `ebookAnchorPhysicalToDisplay` 配对。
+     * 压缩空行时：内链侧车按 Monaco 行序记的「行号」实为显示行，需先映回源物理行再与 `ebookAnchorPhysicalToDisplay` 配对。
      */
     ebookDisplayLineToPhysical?: (displayLine: number) => number;
     /** 在**打开**查找栏（非关闭）之前调用，例如自动点亮书钉 */
@@ -829,6 +871,22 @@ function syncStickyScrollToStreamState() {
   });
 }
 
+/** 章节大纲/标题装饰已更新后，强制粘性条重绘以套用样式 */
+function scheduleStickyChapterScrollRefresh() {
+  if (props.streamLoading) return;
+  const ed = editor.value;
+  if (!ed) return;
+  if (stickyChapterScrollRefreshRaf != null) {
+    cancelAnimationFrame(stickyChapterScrollRefreshRaf);
+  }
+  stickyChapterScrollRefreshRaf = requestAnimationFrame(() => {
+    stickyChapterScrollRefreshRaf = null;
+    const e = editor.value;
+    if (!e || props.streamLoading) return;
+    refreshStickyChapterScrollWidget(e);
+  });
+}
+
 watch(
   () => props.streamLoading,
   () => {
@@ -895,14 +953,45 @@ function appendText(text: string) {
 }
 
 /** 流式读盘结束后一次性写入正文（分块时不再逐块 append，避免重复着色与换行拼接问题） */
-function setFullText(text: string) {
+async function setFullText(text: string, opts?: { heavy?: boolean }) {
   streamCarriageReturnPending = false;
   const m = model.value;
   const e = editor.value;
   if (!m || !e) return;
+  const heavy = opts?.heavy === true;
+  if (heavy) {
+    setReaderSyntaxHighlightEnabled(
+      monaco,
+      false,
+      props.readerSurfaceLight,
+      props.readerSurfaceDark,
+      props.highlightColors,
+    );
+  }
   /** `setValue` 整文替换会使行内装饰失效；须使下次 `setChapters` 强制重建（仅切换行首缩进时行号不变） */
   lastChapterTitleDecorationsLineKey = "";
-  m.setValue(text);
+  if (heavy) {
+    const langId = m.getLanguageId();
+    const nextModel = monaco.editor.createModel(
+      text,
+      langId,
+      monaco.Uri.parse(`colortxt-reader://${Date.now()}`),
+    );
+    e.setModel(nextModel);
+    model.value = nextModel;
+    m.dispose();
+  } else {
+    m.setValue(text);
+  }
+  await yieldToUi();
+  await new Promise<void>((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => resolve());
+    });
+  });
+  if (heavy && props.monacoCustomHighlight) {
+    window.setTimeout(() => applyReaderSyntaxFromProps(), 0);
+  }
 }
 
 function flushStreamCarriageReturn() {
@@ -957,22 +1046,256 @@ function disposeImageViewZones() {
   imageViewZoneIds.value = [];
 }
 
+function disposeEbookLinkIconStyles() {
+  const el = document.getElementById(EBOOK_LINK_ICON_STYLE_ID);
+  if (el) el.textContent = "";
+}
+
+function hashIconRelForCssClass(iconRel: string): string {
+  let h = 5381;
+  for (let i = 0; i < iconRel.length; i++) {
+    h = ((h << 5) + h) ^ iconRel.charCodeAt(i)!;
+  }
+  return (h >>> 0).toString(36);
+}
+
+function ensureEbookLinkIconStyleElement(): HTMLStyleElement {
+  let el = document.getElementById(
+    EBOOK_LINK_ICON_STYLE_ID,
+  ) as HTMLStyleElement | null;
+  if (!el) {
+    el = document.createElement("style");
+    el.id = EBOOK_LINK_ICON_STYLE_ID;
+    document.head.appendChild(el);
+  }
+  return el;
+}
+
+async function applyEbookLinkIconStyles(
+  iconRels: readonly string[],
+  convertedTxtAbsPath: string,
+): Promise<Map<string, string>> {
+  const relToClass = new Map<string, string>();
+  const baseDir = dirnameFs(convertedTxtAbsPath);
+  const rules: string[] = [];
+  const unique = [...new Set(iconRels.filter((r) => r.trim().length > 0))];
+  for (const iconRel of unique) {
+    const fsRel = normalizeRelativeToFsStyle(
+      baseDir,
+      iconRel.replace(/\\/g, "/"),
+    );
+    const absPath = joinFs(baseDir, fsRel);
+    const url = await window.colorTxt.pathToReadableLocalUrl(absPath);
+    if (!url) continue;
+    const hash = hashIconRelForCssClass(iconRel);
+    relToClass.set(iconRel, hash);
+    const safeUrl = url.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    rules.push(
+      `.monaco-editor .readerEbookLinkIcon--${hash}::before { background-image: url("${safeUrl}"); }`,
+    );
+  }
+  ensureEbookLinkIconStyleElement().textContent = rules.join("\n");
+  return relToClass;
+}
+
+function teardownEbookLinkViewportDecorSync() {
+  if (ebookLinkViewportDecorSyncTimer != null) {
+    clearTimeout(ebookLinkViewportDecorSyncTimer);
+    ebookLinkViewportDecorSyncTimer = null;
+  }
+  ebookLinkScrollDecorDisposable?.dispose();
+  ebookLinkScrollDecorDisposable = null;
+  ebookLinkViewportDecorLastKey = "";
+  ebookLinkDecorIconRelToClass = new Map();
+}
+
 function disposeEbookInternalLinks() {
   const e = editor.value;
   if (e && ebookInternalLinkDecorationIds.length > 0) {
     e.deltaDecorations(ebookInternalLinkDecorationIds, []);
     ebookInternalLinkDecorationIds = [];
   }
-  ebookInternalLinkHits.value = [];
+  teardownEbookLinkViewportDecorSync();
+  disposeEbookLinkIconStyles();
+  ebookInternalLinkHitCount.value = 0;
+  ebookInternalLinkHitsByLine.value = new Map();
   ebookAnchorIdToPhysicalLine.value = new Map();
+  ebookAnchorLookupCache = null;
   ebookLeadingLinkLabelsByDisplayLine.value = new Map();
 }
 
-function getEbookAnchorPhysicalLine(targetId: string): number | undefined {
-  return lookupEbookAnchorPhysicalLine(
-    ebookAnchorIdToPhysicalLine.value,
-    targetId,
+function getEbookLinkViewportLineBounds(
+  ed: monaco.editor.IStandaloneCodeEditor,
+): { lo: number; hi: number } | null {
+  const m = ed.getModel();
+  if (!m) return null;
+  const ranges = ed.getVisibleRanges();
+  if (ranges.length === 0) return null;
+  let lo = ranges[0]!.startLineNumber;
+  let hi = ranges[ranges.length - 1]!.endLineNumber;
+  for (const r of ranges) {
+    lo = Math.min(lo, r.startLineNumber);
+    hi = Math.max(hi, r.endLineNumber);
+  }
+  const buf = EBOOK_LINK_VIEWPORT_DECORATION_BUFFER_LINES;
+  return {
+    lo: Math.max(1, lo - buf),
+    hi: Math.min(m.getLineCount(), hi + buf),
+  };
+}
+
+function resolveFootnoteLineTextForEbookHover(
+  targetId: string,
+): string | undefined {
+  const phys = getEbookAnchorPhysicalLine(targetId);
+  if (phys == null) return undefined;
+  const toDisplay = props.ebookAnchorPhysicalToDisplay;
+  if (!toDisplay) return undefined;
+  const displayLine = toDisplay(phys);
+  const m = model.value;
+  if (!m || displayLine < 1 || displayLine > m.getLineCount()) {
+    return undefined;
+  }
+  return extractMdFootnoteHoverTextFromLine(m.getLineContent(displayLine));
+}
+
+function buildEbookLinkDecorationsForViewport(
+  lo: number,
+  hi: number,
+  hitsByLine: Map<number, MdCompactLinkHit[]>,
+  relToClass: Map<string, string>,
+): monaco.editor.IModelDeltaDecoration[] {
+  const decs: monaco.editor.IModelDeltaDecoration[] = [];
+  for (let line = lo; line <= hi; line++) {
+    const hits = hitsByLine.get(line);
+    if (!hits?.length) continue;
+    for (const h of hits) {
+      let inlineClassName: string;
+      if (h.builtinLinkIcon) {
+        inlineClassName =
+          "readerEbookLinkIcon readerEbookLinkIcon--builtin-link";
+      } else {
+        const iconRel = h.iconRel?.trim();
+        const iconHash =
+          iconRel && relToClass.has(iconRel)
+            ? relToClass.get(iconRel)
+            : undefined;
+        inlineClassName = iconHash
+          ? `readerEbookLinkIcon readerEbookLinkIcon--${iconHash}`
+          : h.externalUrl?.trim()
+            ? "readerEbookExternalLink"
+            : "readerEbookInternalLink";
+      }
+      decs.push({
+        range: new monaco.Range(
+          line,
+          h.startColumn,
+          line,
+          h.endColumnExclusive,
+        ),
+        options: {
+          inlineClassName,
+          hoverMessage: {
+            value: mdLinkDecorationHoverMessage(h, {
+              resolveFootnoteLineText: resolveFootnoteLineTextForEbookHover,
+            }),
+          },
+        },
+      });
+    }
+  }
+  return decs;
+}
+
+function syncEbookLinkViewportDecorationsNow() {
+  const ed = editor.value;
+  if (!ed || ebookInternalLinkHitCount.value === 0) return;
+  const bounds = getEbookLinkViewportLineBounds(ed);
+  if (!bounds) return;
+  const key = `${bounds.lo}:${bounds.hi}`;
+  if (
+    key === ebookLinkViewportDecorLastKey &&
+    ebookInternalLinkDecorationIds.length > 0
+  ) {
+    return;
+  }
+  ebookLinkViewportDecorLastKey = key;
+  const decs = buildEbookLinkDecorationsForViewport(
+    bounds.lo,
+    bounds.hi,
+    ebookInternalLinkHitsByLine.value,
+    ebookLinkDecorIconRelToClass,
   );
+  ebookInternalLinkDecorationIds = ed.deltaDecorations(
+    ebookInternalLinkDecorationIds,
+    decs,
+  );
+}
+
+function scheduleEbookLinkViewportDecorSync(immediate = false) {
+  if (immediate) {
+    if (ebookLinkViewportDecorSyncTimer != null) {
+      clearTimeout(ebookLinkViewportDecorSyncTimer);
+      ebookLinkViewportDecorSyncTimer = null;
+    }
+    syncEbookLinkViewportDecorationsNow();
+    return;
+  }
+  if (ebookLinkViewportDecorSyncTimer != null) {
+    clearTimeout(ebookLinkViewportDecorSyncTimer);
+  }
+  ebookLinkViewportDecorSyncTimer = setTimeout(() => {
+    ebookLinkViewportDecorSyncTimer = null;
+    syncEbookLinkViewportDecorationsNow();
+  }, EBOOK_LINK_VIEWPORT_DECOR_SYNC_MS);
+}
+
+async function ensureEbookLinkIconStylesForHits(
+  hitsByLine: Map<number, MdCompactLinkHit[]>,
+): Promise<void> {
+  const iconRelSet = new Set<string>();
+  for (const hits of hitsByLine.values()) {
+    for (const h of hits) {
+      const ir = h.iconRel?.trim();
+      if (ir) iconRelSet.add(ir);
+    }
+  }
+  const txtPath = props.physicalReaderPath?.trim();
+  if (iconRelSet.size > 0 && txtPath) {
+    ebookLinkDecorIconRelToClass = await applyEbookLinkIconStyles(
+      [...iconRelSet],
+      txtPath,
+    );
+  } else {
+    ebookLinkDecorIconRelToClass = new Map();
+  }
+}
+
+function bindEbookLinkViewportDecorScrollSync(
+  ed: monaco.editor.IStandaloneCodeEditor,
+) {
+  ebookLinkScrollDecorDisposable?.dispose();
+  ebookLinkScrollDecorDisposable = ed.onDidScrollChange(() => {
+    scheduleEbookLinkViewportDecorSync();
+  });
+}
+
+function getEbookAnchorLookupCache(): EbookAnchorLookupCache | null {
+  const map = ebookAnchorIdToPhysicalLine.value;
+  if (map.size === 0) {
+    ebookAnchorLookupCache = null;
+    return null;
+  }
+  if (!ebookAnchorLookupCache) {
+    ebookAnchorLookupCache = buildEbookAnchorLookupCache(map);
+  }
+  return ebookAnchorLookupCache;
+}
+
+function getEbookAnchorPhysicalLine(targetId: string): number | undefined {
+  const cache = getEbookAnchorLookupCache();
+  if (!cache) return undefined;
+  return lookupEbookAnchorPhysicalLineCached(cache, targetId);
 }
 
 function getEbookLeadingLinkLabelsByDisplayLine(): ReadonlyMap<
@@ -982,20 +1305,56 @@ function getEbookLeadingLinkLabelsByDisplayLine(): ReadonlyMap<
   return ebookLeadingLinkLabelsByDisplayLine.value;
 }
 
+function setPendingEbookInternalLinkSidecar(
+  sidecar: MdInternalLinkSidecar | null,
+) {
+  pendingEbookSidecar = sidecar;
+}
+
+function shiftPendingEbookSidecarForDeletedDisplayLines(
+  deletedDisplayLinesDesc: readonly number[],
+) {
+  if (!pendingEbookSidecar || deletedDisplayLinesDesc.length === 0) return;
+  shiftMdInternalLinkSidecarDisplayLines(
+    pendingEbookSidecar,
+    deletedDisplayLinesDesc,
+  );
+}
+
+function ebookCompactHitRange(
+  lineNumber: number,
+  hit: MdCompactLinkHit,
+): monaco.Range {
+  return new monaco.Range(
+    lineNumber,
+    hit.startColumn,
+    lineNumber,
+    hit.endColumnExclusive,
+  );
+}
+
 function tryJumpEbookInternalLinkFromPoint(
   clientX: number,
   clientY: number,
 ): boolean {
   const ed = editor.value;
   const m = model.value;
-  if (!ed || !m || ebookInternalLinkHits.value.length === 0) return false;
+  if (!ed || !m || ebookInternalLinkHitCount.value === 0) return false;
   const pos = positionFromClientPoint(ed, clientX, clientY);
   if (!pos) return false;
+  const lineHits = ebookInternalLinkHitsByLine.value.get(pos.lineNumber);
+  if (!lineHits?.length) return false;
   const mapPhys =
     props.ebookAnchorPhysicalToDisplay ?? ((n: number) => Math.max(1, n));
-  for (const h of ebookInternalLinkHits.value) {
-    if (!h.range.containsPosition(pos)) continue;
-    if (!clientXWithinSingleLineModelRange(ed, m, h.range, clientX)) continue;
+  for (const h of lineHits) {
+    const hitRange = ebookCompactHitRange(pos.lineNumber, h);
+    if (!hitRange.containsPosition(pos)) continue;
+    if (!clientXWithinSingleLineModelRange(ed, m, hitRange, clientX)) continue;
+    const externalUrl = h.externalUrl?.trim();
+    if (externalUrl && isAllowedMdExternalUrl(externalUrl)) {
+      void window.colorTxt.openExternal(externalUrl);
+      return true;
+    }
     const phys = getEbookAnchorPhysicalLine(h.targetId);
     if (phys == null) continue;
     beginProgrammaticScroll();
@@ -1005,18 +1364,62 @@ function tryJumpEbookInternalLinkFromPoint(
   return false;
 }
 
+function countEbookLinkHits(
+  hitsByLine: Map<number, MdCompactLinkHit[]>,
+): number {
+  let n = 0;
+  for (const hits of hitsByLine.values()) n += hits.length;
+  return n;
+}
+
 /**
- * 在插图 Zone 处理之后调用：去掉 `<<ID:…>>`、将 `<<A:…|…>>` 换为可见文案并加下划线。
- * 内链装饰范围用 strip 给出的**显示行**（与 Monaco 行号一致）；跳转目标 id 在压缩空行时已映为源物理行，点击时用 `ebookAnchorPhysicalToDisplay` 再映回显示行。
- * 必须用按行 `applyEdits` 而非 `setValue`：整文替换会破坏已插入的插图 View Zone 行号绑定（EPUB 含大量 `<<ID:…>>` 时尤甚）。
+ * 点击在 `editorHost` 捕获阶段统一处理；装饰仅注册视口 ± 缓冲行（滚动时增量替换）。
  */
-function applyEbookInternalLinkMarkers() {
+async function installEbookInternalLinkSidecar(
+  sidecar: MdInternalLinkSidecar,
+) {
+  const ed = editor.value;
+  if (!ed) return;
+  ebookLeadingLinkLabelsByDisplayLine.value =
+    sidecar.leadingMdLinkLabelsByDisplayLine;
+  ebookAnchorIdToPhysicalLine.value = sidecar.idToPhysicalLine;
+  ebookAnchorLookupCache = null;
+
+  const hitsByLine = sidecar.hitsByDisplayLine;
+  if (hitsByLine.size === 0) return;
+
+  ebookInternalLinkHitCount.value = countEbookLinkHits(hitsByLine);
+  ebookInternalLinkHitsByLine.value = hitsByLine;
+
+  await ensureEbookLinkIconStylesForHits(hitsByLine);
+  await yieldToUi();
+  if (editor.value !== ed) return;
+
+  bindEbookLinkViewportDecorScrollSync(ed);
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      scheduleEbookLinkViewportDecorSync(true);
+    });
+  });
+}
+
+/**
+ * 任意 `.md`：剥离 `<span id>` / 内部 MD 链接语法，安装侧车装饰。
+ */
+async function applyMarkdownInternalLinks() {
+  const prefetchedSidecar = pendingEbookSidecar;
+  pendingEbookSidecar = null;
   disposeEbookInternalLinks();
+  if (prefetchedSidecar) {
+    await installEbookInternalLinkSidecar(prefetchedSidecar);
+    return;
+  }
+
   const e = editor.value;
   const m = model.value;
   if (!e || !m) return;
   const raw = m.getValue();
-  if (!/<<(?:ID|A):/.test(raw)) return;
+  if (!lineContainsMdStripLink(raw) && !/<span\s+id=/i.test(raw)) return;
   beginProgrammaticScroll();
   const normalized = raw.replace(/\r\n/g, "\n");
   let {
@@ -1024,9 +1427,9 @@ function applyEbookInternalLinkMarkers() {
     outLines,
     idToPhysicalLine,
     linkOccurrences,
-    leadingEbookLinkLabelsByLine,
-  } = stripEbookIdAndAMarkersFromText(normalized);
-  ebookLeadingLinkLabelsByDisplayLine.value = leadingEbookLinkLabelsByLine;
+    leadingMdLinkLabelsByLine,
+  } = stripMdInternalLinksFromText(normalized);
+  ebookLeadingLinkLabelsByDisplayLine.value = leadingMdLinkLabelsByLine;
   if (
     text === normalized &&
     idToPhysicalLine.size === 0 &&
@@ -1045,56 +1448,74 @@ function applyEbookInternalLinkMarkers() {
     idToPhysicalLine = idMap;
   }
   const lc = m.getLineCount();
-  const edits: monaco.editor.IIdentifiedSingleEditOperation[] = [];
-  for (let lineNumber = 1; lineNumber <= lc; lineNumber++) {
-    const i = lineNumber - 1;
-    const nextLine = outLines[i];
-    if (nextLine === undefined) break;
-    if (m.getLineContent(lineNumber) !== nextLine) {
-      edits.push({
-        range: new monaco.Range(
-          lineNumber,
-          1,
-          lineNumber,
-          m.getLineMaxColumn(lineNumber),
-        ),
-        text: nextLine,
-      });
+  if (text !== normalized && outLines.length === lc) {
+    m.applyEdits([
+      {
+        range: m.getFullModelRange(),
+        text,
+      },
+    ]);
+  } else if (text !== normalized) {
+    const edits: monaco.editor.IIdentifiedSingleEditOperation[] = [];
+    for (let lineNumber = 1; lineNumber <= lc; lineNumber++) {
+      const i = lineNumber - 1;
+      const nextLine = outLines[i];
+      if (nextLine === undefined) break;
+      if (m.getLineContent(lineNumber) !== nextLine) {
+        edits.push({
+          range: new monaco.Range(
+            lineNumber,
+            1,
+            lineNumber,
+            m.getLineMaxColumn(lineNumber),
+          ),
+          text: nextLine,
+        });
+      }
+    }
+    if (edits.length >= MD_LINK_BULK_STRIP_EDIT_THRESHOLD) {
+      m.applyEdits([
+        {
+          range: m.getFullModelRange(),
+          text,
+        },
+      ]);
+    } else if (edits.length > 0) {
+      m.applyEdits(edits);
     }
   }
-  if (edits.length > 0) {
-    m.applyEdits(edits);
-  }
-  ebookAnchorIdToPhysicalLine.value = idToPhysicalLine;
-  const decs: monaco.editor.IModelDeltaDecoration[] = [];
-  const hits: EbookLinkHit[] = [];
+  const hitsByDisplayLine = new Map<number, MdCompactLinkHit[]>();
   const lineCount = Math.max(1, m.getLineCount());
   for (const occ of linkOccurrences) {
     const dl = Math.min(lineCount, Math.max(1, occ.physicalLine));
-    const r = new monaco.Range(dl, occ.startColumn, dl, occ.endColumnExclusive);
-    decs.push({
-      range: r,
-      options: {
-        inlineClassName: "readerEbookInternalLink",
-        hoverMessage: { value: "内部跳转" },
-      },
-    });
-    hits.push({ range: r, targetId: occ.targetId });
+    const hit: MdCompactLinkHit = {
+      startColumn: occ.startColumn,
+      endColumnExclusive: occ.endColumnExclusive,
+      targetId: occ.targetId,
+      iconRel: occ.iconRel,
+      label: occ.label,
+      hoverTip: occ.hoverTip,
+      builtinLinkIcon: occ.builtinLinkIcon,
+      externalUrl: occ.externalUrl,
+    };
+    const bucket = hitsByDisplayLine.get(dl);
+    if (bucket) bucket.push(hit);
+    else hitsByDisplayLine.set(dl, [hit]);
   }
-  ebookInternalLinkHits.value = hits;
-  ebookInternalLinkDecorationIds = e.deltaDecorations([], decs);
+  await installEbookInternalLinkSidecar({
+    idToPhysicalLine,
+    hitsByDisplayLine,
+    leadingMdLinkLabelsByDisplayLine: new Map(
+      [...leadingMdLinkLabelsByLine.entries()].map(([k, v]) => [
+        k,
+        [...v],
+      ]),
+    ),
+  });
 }
 
-function expandMarkdownImagesInModel(mdFileAbsPath: string | null): void {
-  const p = mdFileAbsPath?.trim();
-  if (!p || props.readerEditMode) return;
-  const m = model.value;
-  if (!m) return;
-  const text = m.getValue();
-  const expanded = expandMarkdownImagesInPlainText(text, p);
-  if (expanded !== text) {
-    m.setValue(expanded);
-  }
+function isMarkdownReaderPath(filePath: string): boolean {
+  return /\.md$/i.test(filePath.trim());
 }
 
 async function applyEmbeddedImageAnchors(
@@ -1105,9 +1526,14 @@ async function applyEmbeddedImageAnchors(
   const p = convertedTxtAbsPath?.trim();
   if (!p) return { zoneIds: [], deletedOriginalLineNumbersDesc: [] };
   const e = editor.value;
-  if (!e) return { zoneIds: [], deletedOriginalLineNumbersDesc: [] };
+  const m = model.value;
+  if (!e || !m) return { zoneIds: [], deletedOriginalLineNumbersDesc: [] };
+  const raw = m.getValue();
+  const isMd = !props.readerEditMode && isMarkdownReaderPath(p);
   const result = await replaceImgAnchorLinesWithViewZones(monaco, e, p, {
     zoneHeightPx: 100,
+    sourceText: raw,
+    blockImages: isMd ? collectBlockMarkdownImageLines(raw, p) : [],
   });
   imageViewZoneIds.value = result.zoneIds;
   return result;
@@ -1115,6 +1541,7 @@ async function applyEmbeddedImageAnchors(
 
 function clear(opts?: ReaderClearOptions) {
   disposeEbookInternalLinks();
+  pendingEbookSidecar = null;
   disposeImageViewZones();
   imageLightboxSrc.value = "";
   streamCarriageReturnPending = false;
@@ -1162,45 +1589,81 @@ function setChapters(chapters: ChapterStickyLine[]) {
 
   chaptersSnapshot = chapters
     .slice()
-    .sort((a, b) => a.lineNumber - b.lineNumber)
+    .sort(
+      (a, b) =>
+        (a.tocOrder ?? a.lineNumber) - (b.tocOrder ?? b.lineNumber) ||
+        a.lineNumber - b.lineNumber,
+    )
     .map((c) => ({
       lineNumber: c.lineNumber,
       title: chapterTitleForDisplay(c.title),
+      headingLevel: c.headingLevel,
+      tocOrder: c.tocOrder,
     }));
 
   const maxLine = m.getLineCount();
+  let chapterTitleDisplayEdited = false;
   /** 编辑态仅同步章节元数据，勿 applyEdits 剥标题行首空白（会误触 dirty） */
   if (!props.readerEditMode) {
     const edits: monaco.editor.IIdentifiedSingleEditOperation[] = [];
+    const normalizedChapterLines = new Set<number>();
+    const linkColumnShiftByLine = new Map<number, number>();
     for (const ch of chaptersSnapshot) {
       const ln = ch.lineNumber;
-      if (ln < 1 || ln > maxLine) continue;
-      let line = m.getLineContent(ln);
+      if (ln < 1 || ln > maxLine || normalizedChapterLines.has(ln)) continue;
+      normalizedChapterLines.add(ln);
+      const original = m.getLineContent(ln);
+      let line = original;
+      let colShift = 0;
       if (props.fileIsMarkdown) {
-        const withoutMarkers = formatMarkdownHeadingLineForDisplay(line);
-        if (withoutMarkers !== line) {
-          edits.push({
-            range: new monaco.Range(
-              ln,
-              1,
-              ln,
-              m.getLineMaxColumn(ln),
-            ),
-            text: withoutMarkers,
-          });
-          line = withoutMarkers;
+        const atxCols = atxHeadingPrefixLength(line);
+        const withoutAtx = formatMarkdownHeadingLineForDisplay(line);
+        if (atxCols > 0 && withoutAtx !== line && line.slice(atxCols) === withoutAtx) {
+          colShift += atxCols;
+          line = withoutAtx;
+        } else {
+          line = withoutAtx;
         }
       }
       const n = leadingWhitespaceColumnCount(line);
       if (n > 0) {
+        line = line.slice(n);
+        colShift += n;
+      }
+      if (line !== original) {
+        if (colShift > 0) linkColumnShiftByLine.set(ln, colShift);
         edits.push({
-          range: new monaco.Range(ln, 1, ln, n + 1),
-          text: "",
+          range: new monaco.Range(ln, 1, ln, m.getLineMaxColumn(ln)),
+          text: line,
         });
       }
     }
     if (edits.length > 0) {
+      chapterTitleDisplayEdited = true;
       m.applyEdits(edits);
+      if (ebookInternalLinkHitCount.value > 0) {
+        const hitsMap = ebookInternalLinkHitsByLine.value;
+        for (const [ln, strippedCols] of linkColumnShiftByLine) {
+          const hits = hitsMap.get(ln);
+          if (!hits?.length) continue;
+          for (const hit of hits) {
+            shiftMdLinkHitColumns(hit, -strippedCols);
+          }
+        }
+        ebookInternalLinkHitsByLine.value = new Map(hitsMap);
+        ebookLinkViewportDecorLastKey = "";
+        scheduleEbookLinkViewportDecorSync(true);
+      }
+    } else if (chaptersSnapshot.length > 0) {
+      // EPUB 等无标题行改写时亦须 bump 模型版本，否则粘性大纲不刷新
+      const lc = m.getLineCount();
+      const col = m.getLineMaxColumn(lc);
+      m.applyEdits([
+        {
+          range: new monaco.Range(lc, col, lc, col),
+          text: "",
+        },
+      ]);
     }
   }
 
@@ -1231,14 +1694,29 @@ function setChapters(chapters: ChapterStickyLine[]) {
     lastChapterTitleDecorationsLineKey = "";
     syncChapterMinimapSectionHeaderDecorations();
     notifyChapterStickyFoldingRanges?.();
+    syncStickyScrollToStreamState();
+    scheduleStickyChapterScrollRefresh();
     return;
   }
   syncChapterMinimapSectionHeaderDecorations();
-  if (lineKey !== lastChapterTitleDecorationsLineKey) {
+  if (
+    lineKey !== lastChapterTitleDecorationsLineKey ||
+    chapterTitleDisplayEdited
+  ) {
     collection.set(buildChapterTitleDecorations(monaco, m, chaptersSnapshot));
     lastChapterTitleDecorationsLineKey = lineKey;
   }
   notifyChapterStickyFoldingRanges?.();
+  syncStickyScrollToStreamState();
+  scheduleStickyChapterScrollRefresh();
+  if (ebookInternalLinkHitCount.value > 0) {
+    ebookLinkViewportDecorLastKey = "";
+    scheduleEbookLinkViewportDecorSync(true);
+  }
+  requestAnimationFrame(() => {
+    notifyChapterStickyFoldingRanges?.();
+    scheduleStickyChapterScrollRefresh();
+  });
 }
 
 function syncChapterMinimapSectionHeaderDecorations() {
@@ -2055,9 +2533,10 @@ defineExpose({
   scrollToScrollTop,
   getSerializedEditorViewState,
   restoreEditorViewState,
-  expandMarkdownImagesInModel,
   applyEmbeddedImageAnchors,
-  applyEbookInternalLinkMarkers,
+  applyMarkdownInternalLinks,
+  setPendingEbookInternalLinkSidecar,
+  shiftPendingEbookSidecarForDeletedDisplayLines,
   getEbookLeadingLinkLabelsByDisplayLine,
   getReaderEditorDomNode: () => editor.value?.getDomNode() ?? null,
 });
@@ -2137,6 +2616,8 @@ onMounted(() => {
 
   editor.value = monaco.editor.create(editorEl.value!, {
     model: m,
+    /** 脚注悬停等溢出挂件挂到 body，脱离 `.editorHost { overflow:hidden }` */
+    overflowWidgetsDomNode: document.body,
     ...buildReaderEditorCreateOptions({
       fontSize: READER_EDITOR_DEFAULT_FONT_SIZE,
       lineHeightMultiple,
@@ -2223,7 +2704,7 @@ onMounted(() => {
     const onReaderPointerDownCapture = (ev: PointerEvent) => {
       if (ev.button !== 0) return;
       if (
-        ebookInternalLinkHits.value.length > 0 &&
+        ebookInternalLinkHitCount.value > 0 &&
         tryJumpEbookInternalLinkFromPoint(ev.clientX, ev.clientY)
       ) {
         ev.preventDefault();
@@ -2282,6 +2763,10 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  if (stickyChapterScrollRefreshRaf != null) {
+    cancelAnimationFrame(stickyChapterScrollRefreshRaf);
+    stickyChapterScrollRefreshRaf = null;
+  }
   notifyChapterStickyFoldingRanges = null;
   disposeEbookInternalLinks();
   cancelImageViewZoneScrollRender();
@@ -2497,11 +2982,12 @@ onMounted(() => {
 /* 与 chapterStickyScroll.CHAPTER_TITLE_LINE_CLASS（chapterTitleLine）一致 */
 :deep(.monaco-editor .chapterTitleLine) {
   color: var(--reader-chapter-title) !important;
-  font-size: 2em !important;
+  /* 勿用 transform:scale 配合大字号：缩放不占布局宽，行尾脚注图标会被挤到右侧 */
+  font-size: 1.2em !important;
 }
-:deep(.monaco-editor span:has(> .chapterTitleLine)) {
-  display: inline-block;
-  transform-origin: left;
-  transform: scale(0.6);
+:deep(.monaco-editor .chapterTitleLine.readerEbookLinkIcon),
+:deep(.monaco-editor .readerEbookLinkIcon.chapterTitleLine) {
+  color: transparent !important;
+  font-size: 1em !important;
 }
 </style>

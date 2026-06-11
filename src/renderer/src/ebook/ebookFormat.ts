@@ -31,7 +31,7 @@ export function fileStemFromPath(filePath: string): string {
 }
 
 /**
- * 电子书源文件名（含扩展名），用于输出 `{basename}.txt`；有插图时另有 `{basename}.Images/`。
+ * 电子书源文件名（含扩展名），用于输出 `{basename}.md`；有插图时另有 `{basename}.Images/`。
  * 例：`C:/b/abc.epub` → 规范化后的 `abc.epub`。
  */
 export function ebookSourceFileBaseForOutput(filePath: string): string {
@@ -48,7 +48,7 @@ const WIN_FILENAME_FORBIDDEN = /[<>:"/\\|?*\u0000-\u001f]/g;
 const WIN_RESERVED_STEM = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
 
 /**
- * 将文件名段规范为可安全用于 `{basename}.txt` 的段（避免非法字符导致写入成功但路径无法 stat）。
+ * 将文件名段规范为可安全用于 `{basename}.md` 的段（避免非法字符导致写入成功但路径无法 stat）。
  */
 export function sanitizeWindowsFilenameSegment(name: string, maxLen = 180): string {
   let s = name

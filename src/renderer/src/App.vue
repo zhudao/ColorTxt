@@ -61,7 +61,7 @@ import { useAppShellThemeWatch } from "./composables/useAppShellThemeWatch";
 import { useAppSyncCurrentFileWatch } from "./composables/useAppSyncCurrentFileWatch";
 import { useAppWindowBindings } from "./composables/useAppWindowBindings";
 import { useAiChapterPlainTextBridge } from "./composables/useAiChapterPlainTextBridge";
-import { isMarkdownFilePath } from "./ebook/ebookFormat";
+import { isEbookFilePath, isMarkdownFilePath } from "./ebook/ebookFormat";
 import { useAppVoiceRead } from "./composables/useAppVoiceRead";
 import { useTxtStreamPipeline } from "./composables/useTxtStreamPipeline";
 import { fileHistoryKey } from "./stores/recentHistoryStore";
@@ -648,6 +648,16 @@ const footerPathMenuReloadEnabled = computed(
   () =>
     Boolean(currentFile.value && !loading.value && !ebookParsing.value),
 );
+/** 原始会话路径为电子书（非 txt/md）时展示「重新转换」 */
+const footerPathMenuReconvertEnabled = computed(
+  () =>
+    Boolean(
+      currentFile.value &&
+        isEbookFilePath(currentFile.value) &&
+        !loading.value &&
+        !ebookParsing.value,
+    ),
+);
 const footerPathMenuCloseEnabled = computed(() =>
   Boolean(currentFile.value),
 );
@@ -727,6 +737,10 @@ const stream = useTxtStreamPipeline({
   chapterMinCharCount,
   currentFileIsMarkdown,
   afterFullTextInstalled: () => afterStreamFullTextInstalled(),
+  onReaderDisplayReady: () => {
+    loading.value = false;
+    loadingProgressPercent.value = null;
+  },
 });
 
 /** 程序化刷新章节表期间禁止侧栏 watch 抢跑滚动（会与 centerActiveChapterInList 竞态） */
@@ -1242,30 +1256,46 @@ const chapterNav = useAppChapterNavigation({
 });
 
 afterStreamFullTextInstalled = async () => {
-  if (currentFileIsMarkdown.value && !readerEditMode.value) {
-    readerRef.value?.expandMarkdownImagesInModel?.(physicalReaderPath.value);
-  }
+  await new Promise<void>((resolve) => {
+    const ric = (
+      globalThis as typeof globalThis & {
+        requestIdleCallback?: (
+          cb: () => void,
+          opts?: { timeout: number },
+        ) => number;
+      }
+    ).requestIdleCallback;
+    if (typeof ric === "function") {
+      ric(() => resolve(), { timeout: 120 });
+    } else {
+      window.setTimeout(resolve, 16);
+    }
+  });
   const imgAnchors = await readerRef.value?.applyEmbeddedImageAnchors(
     physicalReaderPath.value,
   );
-  // 插图删行会改变 Monaco 行数；压缩空行时须先同步 display↔physical 映射，再解析 <<ID:…>> / <<A:…>>，
-  // 否则锚点 id→物理行与点击跳转 physical→显示行会错位。
-  if (
-    imgAnchors?.deletedOriginalLineNumbersDesc?.length &&
-    compressBlankLines.value
-  ) {
+  // 插图删行会改变 Monaco 行数；须同步 display↔physical 映射（含未压缩空行），否则内链跳转错位。
+  if (imgAnchors?.deletedOriginalLineNumbersDesc?.length) {
     stream.removeFilteredDisplayLinesAtOriginalIndices(
       imgAnchors.deletedOriginalLineNumbersDesc,
     );
   }
-  readerRef.value?.applyEbookInternalLinkMarkers?.();
+  if (imgAnchors?.deletedOriginalLineNumbersDesc?.length) {
+    readerRef.value?.shiftPendingEbookSidecarForDeletedDisplayLines?.(
+      imgAnchors.deletedOriginalLineNumbersDesc,
+    );
+  }
+  stream.resyncFormattedDisplayLinesFromReader?.();
+  if (currentFileIsMarkdown.value && !readerEditMode.value) {
+    await readerRef.value?.applyMarkdownInternalLinks?.();
+  }
   stream.resyncMirrorFromReader();
 };
 
 /** 视口已按物理行恢复且 probe 已更新后：重算章节并居中侧栏（加载结束等） */
 async function syncChaptersAfterViewportSettled() {
   try {
-    chapterNav.refreshChapterListFromReader();
+    await chapterNav.refreshChapterListFromReaderAsync?.();
     await nextTick();
     await readerSidebarRef.value?.centerActiveChapterInList?.(false);
   } finally {
@@ -1591,6 +1621,16 @@ async function reloadCurrentFileFromDisk() {
   const path = currentFile.value;
   if (!path) return;
   await openFilePath(path, { keepSidebarTab: true });
+}
+
+/** 底栏路径菜单：忽略缓存，强制重新转换电子书源文件 */
+async function reconvertCurrentEbookFromDisk() {
+  const path = currentFile.value;
+  if (!path || !isEbookFilePath(path)) return;
+  await openFilePath(path, {
+    keepSidebarTab: true,
+    forceEbookConvert: true,
+  });
 }
 
 function quitApp() {
@@ -2370,6 +2410,7 @@ useAppShellThemeWatch({
           :ai-assistant-config-sync-nonce="aiAssistantConfigSyncNonce"
           :chapters="chapters"
           :active-chapter-idx="activeChapterIdx"
+          :chapter-min-char-count="chapterMinCharCount"
           :format-char-count="formatCharCount"
           :show-edit-chapter-refresh-button="showEditChapterRefreshButton"
           @pick-directory="pickTxtDirectory"
@@ -2573,9 +2614,11 @@ useAppShellThemeWatch({
         :encoding-actions-enabled="footerEncodingActionsEnabled"
         :path-menu-reveal-enabled="footerPathMenuRevealEnabled"
         :path-menu-reload-enabled="footerPathMenuReloadEnabled"
+        :path-menu-reconvert-enabled="footerPathMenuReconvertEnabled"
         :path-menu-close-enabled="footerPathMenuCloseEnabled"
         @path-reveal-in-folder="revealCurrentFileInFolder"
         @path-reload="reloadCurrentFileFromDisk"
+        @path-reconvert="reconvertCurrentEbookFromDisk"
         @path-close="closeCurrentFile"
         @save-file-as-encoding="onFooterSaveFileAsEncoding"
       />

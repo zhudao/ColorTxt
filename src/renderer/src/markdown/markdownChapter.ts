@@ -1,4 +1,10 @@
-import { filterChaptersByMinCharCount, type Chapter } from "../chapter";
+import {
+  filterChaptersByMinCharCount,
+  rollupChapterCharCountsByHeadingLevel,
+  rollupCharCountsByHeadingLevel,
+  type Chapter,
+} from "../chapter";
+import { plainTextForEbookTitleMatch } from "../ebook/ebookTitleMatch";
 import { countCharsForLine } from "../utils/format";
 import { isBlankPhysicalLineContent } from "../reader/lineMapping";
 import {
@@ -9,24 +15,35 @@ import {
 const RE_ATX_HEADING = /^\s{0,3}(#{1,6})\s+(.+)$/;
 
 export type MarkdownHeading = {
+  /** 侧栏/章节匹配用纯标题（已剥内链） */
   title: string;
   level: number;
+  /** ATX `#` 后原文（保留内链 MD 语法，供展示） */
+  titleSource: string;
 };
 
 export function detectMarkdownHeading(line: string): MarkdownHeading | null {
   const m = line.replace(/\r?\n$/, "").match(RE_ATX_HEADING);
   if (!m) return null;
   const level = m[1]!.length;
-  let title = m[2]!.trim();
-  title = title.replace(/\s+#+\s*$/g, "").trim();
+  let titleSource = m[2]!.trim();
+  titleSource = titleSource.replace(/\s+#+\s*$/g, "").trim();
+  if (!titleSource) return null;
+  const title = plainTextForEbookTitleMatch(titleSource);
   if (!title) return null;
-  return { title, level };
+  return { title, level, titleSource };
 }
 
-/** 只读展示：去掉 ATX `#` 前缀，保留标题正文 */
+/** 只读展示：去掉 ATX `#` 前缀，保留标题正文（含内链） */
 export function formatMarkdownHeadingLineForDisplay(line: string): string {
   const h = detectMarkdownHeading(line);
-  return h ? h.title : line;
+  return h ? h.titleSource : line;
+}
+
+/** ATX `#` / `##` 等前缀占用的列数（Monaco 1-based 列映射用） */
+export function atxHeadingPrefixLength(line: string): number {
+  const m = line.match(/^\s{0,3}(#{1,6})\s+/);
+  return m ? m[0].length : 0;
 }
 
 export function isMarkdownHeadingPhysicalLine(
@@ -80,7 +97,11 @@ export function collectQualifiedMarkdownChapterTitlePhysicalLines(
   }
 
   const tracker = createMarkdownBlockContextTracker();
-  const sections: { titlePhysicalLine: number; charCount: number }[] = [];
+  const sections: {
+    titlePhysicalLine: number;
+    charCount: number;
+    level: number;
+  }[] = [];
   let currentIdx = -1;
   let physicalLine = 0;
 
@@ -91,7 +112,11 @@ export function collectQualifiedMarkdownChapterTitlePhysicalLines(
     const h =
       !tracker.isInCodeBlock() ? detectMarkdownHeading(raw) : null;
     if (h) {
-      sections.push({ titlePhysicalLine: physicalLine, charCount: 0 });
+      sections.push({
+        titlePhysicalLine: physicalLine,
+        charCount: 0,
+        level: h.level,
+      });
       currentIdx = sections.length - 1;
       continue;
     }
@@ -99,6 +124,8 @@ export function collectQualifiedMarkdownChapterTitlePhysicalLines(
       sections[currentIdx]!.charCount += countCharsForLine(raw);
     }
   }
+
+  rollupCharCountsByHeadingLevel(sections, (i) => sections[i]!.level);
 
   for (const s of sections) {
     if (s.charCount >= floor) qualified.add(s.titlePhysicalLine);
@@ -126,11 +153,12 @@ export function buildChaptersFromMarkdownPhysicalLines(
   const displayLines =
     normalized.length > 0 ? normalized.split("\n") : [];
 
-  const chapters: Chapter[] = hits.map((h) => ({
+  const chapters: Chapter[] = hits.map((h, i) => ({
     title: h.title,
     lineNumber: options.physicalLineToDisplayLine(h.physicalLine),
     charCount: 0,
     headingLevel: h.level,
+    tocOrder: i,
   }));
 
   if (chapters.length === 0) return [];
@@ -151,6 +179,7 @@ export function buildChaptersFromMarkdownPhysicalLines(
     }
   }
 
+  rollupChapterCharCountsByHeadingLevel(chapters);
   return filterChaptersByMinCharCount(chapters, options.minCharCount);
 }
 

@@ -351,11 +351,26 @@ export function useAppWindowBindings(deps: {
           const finishReadingSync = () => {
             deps.readerRef.value?.normalizeScrollAfterEmbeddedViewZones?.();
             deps.readerRef.value?.emitProbeLine();
-            void Promise.resolve(deps.syncChaptersAfterViewportSettled()).then(
-              () => {
-                markReadingProgressSynced();
-              },
-            );
+            const runChapterSync = () => {
+              void Promise.resolve(deps.syncChaptersAfterViewportSettled()).then(
+                () => {
+                  markReadingProgressSynced();
+                },
+              );
+            };
+            const ric = (
+              globalThis as typeof globalThis & {
+                requestIdleCallback?: (
+                  cb: () => void,
+                  opts?: { timeout: number },
+                ) => number;
+              }
+            ).requestIdleCallback;
+            if (typeof ric === "function") {
+              ric(() => runChapterSync(), { timeout: 3000 });
+            } else {
+              window.setTimeout(runChapterSync, 0);
+            }
           };
 
           if (

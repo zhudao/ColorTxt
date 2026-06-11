@@ -1,4 +1,4 @@
-import type { Ref } from "vue";
+import { nextTick, type Ref } from "vue";
 import type ReaderMain from "../components/ReaderMain.vue";
 import {
   lineHeightMultipleStep,
@@ -143,6 +143,8 @@ export function useAppReaderUiPrefs(deps: {
         deps.persistSettings();
         return;
       }
+      await nextTick();
+      deps.readerRef.value?.emitProbeLine?.();
       await deps.syncChaptersAfterViewportSettled();
     });
   }

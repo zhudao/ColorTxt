@@ -7,7 +7,7 @@ import { READER_SIDEBAR_ROW_STRIDE } from "../composables/useReaderSidebarLists"
 defineProps<{
   currentFilePath: string | null;
   chaptersVisible: Chapter[];
-  sidebarActiveLineNumber: number;
+  isChapterActive: (ch: Chapter) => boolean;
   showChapterCounts: boolean;
   formatCharCount: (n: number) => string;
 }>();
@@ -52,8 +52,7 @@ function onBindListRef(value: Element | ComponentPublicInstance | null) {
             <button
               class="sidebarItem"
               :class="{
-                active:
-                  chaptersVisible[index].lineNumber === sidebarActiveLineNumber,
+                active: isChapterActive(chaptersVisible[index]),
               }"
               :title="chaptersVisible[index].title"
               @click="emit('jumpToChapter', chaptersVisible[index])"

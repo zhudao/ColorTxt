@@ -1,8 +1,7 @@
 import type * as monaco from "monaco-editor";
-import { dirnameFs, joinFs } from "../ebook/pathUtils";
-
-/** 整行匹配；路径内不得含 `>` */
-export const READER_IMG_ANCHOR_LINE_RE = /^\s*<<IMG:([^>]+)>>\s*$/;
+import { yieldToUi } from "../ebook/yieldToUi";
+import type { BlockMarkdownImageLine } from "../markdown/markdownImages";
+import { omitLinesAtLineNumbers } from "../markdown/markdownImages";
 
 /** `replaceImgAnchorLinesWithViewZones` 返回：插图 View Zone id，以及删行前 Monaco 行号（降序，便于与滤空映射同步 splice） */
 export type ReplaceImgAnchorsResult = {
@@ -10,40 +9,8 @@ export type ReplaceImgAnchorsResult = {
   deletedOriginalLineNumbersDesc: number[];
 };
 
-function isRemoteImgPayload(payload: string): boolean {
-  return /^https?:\/\//i.test(payload.trim());
-}
-
-function joinUnderDir(dirAbs: string, relativePosix: string): string {
-  let out = dirAbs;
-  for (const seg of relativePosix.replace(/\\/g, "/").split("/").filter(Boolean)) {
-    out = joinFs(out, seg);
-  }
-  return out;
-}
-
-function lineDeleteRange(
-  monacoApi: typeof monaco,
-  model: monaco.editor.ITextModel,
-  line: number,
-): monaco.Range {
-  const lc = model.getLineCount();
-  if (line < 1 || line > lc) {
-    return new monacoApi.Range(1, 1, 1, 1);
-  }
-  if (lc === 1) {
-    return new monacoApi.Range(1, 1, 1, model.getLineMaxColumn(1));
-  }
-  if (line < lc) {
-    return new monacoApi.Range(line, 1, line + 1, 1);
-  }
-  const prev = line - 1;
-  return new monacoApi.Range(
-    prev,
-    model.getLineMaxColumn(prev),
-    line,
-    model.getLineMaxColumn(line),
-  );
+function isRemoteImgPath(path: string): boolean {
+  return /^https?:\/\//i.test(path.trim());
 }
 
 /**
@@ -60,31 +27,27 @@ function syncReaderImageViewZoneBox(
 }
 
 /**
- * 删除 `<<IMG:…>>` 独占行并在对应位置插入 View Zone；相对路径相对 `dirname(convertedTxtAbsPath)`。
+ * 删除块级 `![…](…)` 源行并在对应位置插入 View Zone。
  */
 export async function replaceImgAnchorLinesWithViewZones(
-  monacoApi: typeof monaco,
+  _monacoApi: typeof monaco,
   editor: monaco.editor.IStandaloneCodeEditor,
-  convertedTxtAbsPath: string,
+  _convertedTxtAbsPath: string,
   options: {
     zoneHeightPx: number;
     onZonesChange?: (zoneIds: string[]) => void;
+    sourceText?: string;
+    blockImages: readonly BlockMarkdownImageLine[];
   },
 ): Promise<ReplaceImgAnchorsResult> {
   const model = editor.getModel();
   if (!model) return { zoneIds: [], deletedOriginalLineNumbersDesc: [] };
-  /** 闭包内 TS 不保留 `model` 非空收窄，用局部常量绑定 */
   const doc = model;
-  const txtDir = dirnameFs(convertedTxtAbsPath.replace(/\\/g, "/"));
 
-  const matches: { line: number; rel: string }[] = [];
-  const lc0 = doc.getLineCount();
-  for (let L = 1; L <= lc0; L++) {
-    const line = doc.getLineContent(L);
-    const m = line.match(READER_IMG_ANCHOR_LINE_RE);
-    if (m?.[1]?.trim()) {
-      matches.push({ line: L, rel: m[1].trim() });
-    }
+  const workingText = options.sourceText ?? doc.getValue();
+  const matches = options.blockImages;
+  if (matches.length > 0 && matches.length % 64 === 0) {
+    await yieldToUi();
   }
   if (matches.length === 0)
     return { zoneIds: [], deletedOriginalLineNumbersDesc: [] };
@@ -100,10 +63,8 @@ export async function replaceImgAnchorLinesWithViewZones(
   }
 
   /**
-   * 删去所有 `<<IMG:…>>` 行后，View Zone 应插在该插图**上一行非插图内容**之后。
-   * 只向上跳过其它插图锚点行；**不要**跳过「上图、空行、下图」里的空行，否则在
-   * 「正文—空—图1—空—图2」结构下会把图2 错锚到图1 上方的空行，造成整篇越往后越错位。
-   * 任意非插图行（正文或空行）在删行后的行号均为 `k - deletedBefore(k)`。
+   * 删去插图源行后，View Zone 应插在该插图**上一行非插图内容**之后。
+   * 只向上跳过其它插图行；**不要**跳过「上图、空行、下图」里的空行。
    */
   function afterLineNumberForImgMatch(match: { line: number }): number {
     let k = match.line - 1;
@@ -114,32 +75,23 @@ export async function replaceImgAnchorLinesWithViewZones(
     return k - deletedBefore(k);
   }
 
-  /** 必须在 `applyEdits` 之前算好：`getLineContent(k)` 用的是删行前的行号 */
   const zoneSpecs: { afterLineNumber: number; absPath: string }[] = [];
   for (const m of matches.slice().sort((a, b) => a.line - b.line)) {
-    const rel = m.rel.replace(/\\/g, "/");
-    const abs = isRemoteImgPayload(rel)
-      ? rel
-      : joinUnderDir(txtDir, rel);
     zoneSpecs.push({
       afterLineNumber: afterLineNumberForImgMatch(m),
-      absPath: abs,
+      absPath: m.absPath,
     });
   }
 
-  const edits = matches
-    .slice()
-    .sort((a, b) => b.line - a.line)
-    .map((m) => ({
-      range: lineDeleteRange(monacoApi, doc, m.line),
-      text: "",
-    }));
-  doc.applyEdits(edits);
+  const finalText = omitLinesAtLineNumbers(workingText, imgLineSet);
+  if (doc.getValue() !== finalText) {
+    doc.setValue(finalText);
+  }
 
   const withUrls = await Promise.all(
     zoneSpecs.map(async (z) => ({
       ...z,
-      url: isRemoteImgPayload(z.absPath)
+      url: isRemoteImgPath(z.absPath)
         ? z.absPath
         : ((await window.colorTxt.pathToReadableLocalUrl(z.absPath)) ?? ""),
     })),
@@ -157,7 +109,6 @@ export async function replaceImgAnchorLinesWithViewZones(
           : undefined;
       const dom = document.createElement("div");
       dom.className = "readerImageViewZone";
-      /** 由 `ReaderMain` 在 window 捕获阶段读取并打开灯箱（Monaco 会拦截 View Zone 内直接绑定的事件） */
       dom.dataset.colortxtImgUrl = z.url;
       dom.style.boxSizing = "border-box";
       dom.style.height = `${options.zoneHeightPx}px`;
@@ -165,7 +116,6 @@ export async function replaceImgAnchorLinesWithViewZones(
       dom.style.overflow = "hidden";
       dom.style.pointerEvents = "none";
       syncReaderImageViewZoneBox(editor, dom);
-      /** 内层负责居中；勿对外层用 `contain: strict`，否则会破坏 img 命中测试与手型 */
       const frame = document.createElement("div");
       frame.className = "readerImageViewZoneFrame";
       const img = document.createElement("img");

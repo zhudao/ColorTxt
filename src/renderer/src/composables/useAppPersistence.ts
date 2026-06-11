@@ -509,14 +509,14 @@ export function useAppPersistence(deps: {
 
   function setEbookConvertedMeta(
     bookPath: string,
-    convertedTxtPath: string,
+    convertedMdPath: string,
     sourceMtimeMs: number,
   ) {
     deps.fileMetaRecords.value = upsertFileMetaRecord(
       deps.fileMetaRecords.value,
       bookPath,
       () => ({
-        convertedTxtPath,
+        convertedMdPath,
         sourceMtimeMsAtConvert: sourceMtimeMs,
       }),
     );

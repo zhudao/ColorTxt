@@ -286,25 +286,34 @@ src/
 │       ├── markdown/             # Markdown 章节与图片展开
 │       │   ├── markdownChapter.ts      # ATX 标题、章节表
 │       │   ├── markdownBlockContext.ts # 围栏/缩进代码块（# 误识别防护）
-│       │   └── markdownImages.ts       # `![…](…)` → `<<IMG:…>>`
-│       ├── ebook/                # 电子书转 ColorTxt
-│       │   ├── convertEbookToColorTxt.ts   # 调度、缓存与写出
+│       │   └── markdownImages.ts       # 块级 `![…](…)` 扫描（阅读器 View Zone）
+│       ├── ebook/                # 电子书转 Markdown
 │       │   ├── ebookFormat.ts    # 路径判定与输出基名
-│       │   ├── ebookTypes.ts     # 转换产物类型
+│       │   ├── ebookTitleMatch.ts # 目录标题匹配用纯文本提取
 │       │   ├── pathUtils.ts      # 路径片段规范化
 │       │   ├── yieldToUi.ts      # 长任务让出主线程
-│       │   ├── ebookInternalLinkMarkers.ts # 内链标记与转义
-│       │   ├── parseEpub.ts      # EPUB 解析
-│       │   ├── parseMobi.ts      # MOBI / AZW3
-│       │   ├── parsePdf.ts       # PDF 文本层
-│       │   ├── parseFb2.ts       # FB2 / FBZ
-│       │   ├── parseChm.ts       # CHM 解析入口
-│       │   ├── chm/
-│       │   │   ├── chmArchive.ts # CHM 归档读取
-│       │   │   └── lzxDecode.ts  # LZX 解压
-│       │   └── mobi/
-│       │       ├── foliateMobi.js    # Foliate MOBI 引擎
-│       │       └── foliateMobi.d.ts  # 类型声明
+│       │   └── convert/          # 格式解析、注入与写出
+│       │       ├── convertEbookToMarkdown.ts # 调度、缓存与写出
+│       │       ├── ebookTypes.ts             # 转换产物类型
+│       │       ├── ebookTocAnchorInjection.ts # 嵌入目录 → ATX / toc span 注入
+│       │       ├── ebookSpineLineMatch.ts      # spine 节内标题行匹配与行变更
+│       │       ├── ebookTocTypes.ts            # EmbeddedTocEntry、目录去重
+│       │       ├── ebookEpubNav.ts             # EPUB nav/NCX 目录解析
+│       │       ├── ebookMarkdownEmit.ts        # span / MD 内链 / ATX 前缀
+│       │       ├── ebookFootnoteLinkFragments.ts # 脚注回跳 fragment
+│       │       ├── ebookStemOnlyMdLinks.ts     # 无文案 stem 内链
+│       │       ├── ebookLinkIconHeuristics.ts  # 链接图标 vs 块级图判定
+│       │       ├── parseEpub.ts      # EPUB 解析
+│       │       ├── parseMobi.ts      # MOBI / AZW3
+│       │       ├── parsePdf.ts       # PDF 文本层 + 书签大纲
+│       │       ├── parseFb2.ts       # FB2 / FBZ
+│       │       ├── parseChm.ts       # CHM 解析入口
+│       │       ├── chm/
+│       │       │   ├── chmArchive.ts # CHM 归档读取
+│       │       │   └── lzxDecode.ts  # LZX 解压
+│       │       └── mobi/
+│       │           ├── foliateMobi.js    # Foliate MOBI 引擎
+│       │           └── foliateMobi.d.ts  # 类型声明
 │       ├── ai/                   # 建索引与内置嵌入就绪校验
 │       │   ├── buildBookVectorIndex.ts # 按章节切块并写入向量库
 │       │   └── embeddingReady.ts       # 建索引前检查内置模型是否已下载
@@ -402,7 +411,7 @@ src/
 - **`messageBoxInvoke.ts`**：`dialog:showMessageBox` 参数解析（与 `@shared/colorTxtShowMessageBox` 对齐）。
 - **`aiPaths.ts`**：**`resolveAiDataCacheRoot`** / **`aiConfigFilePath`** / **`vectorDbFilePath`** / **`segmentDbFilePath`**（随 **`AIConfig.aiDataCacheDir`**）；**`resolveBuiltinModelCacheRoot`**、**`transformersCacheDirForModelRoot`**（内置模型 HF 缓存）。
 - **`aiDataFs.ts`**：**`upgradeLegacyAiDataLayoutIfNeeded`**（旧版 `userData/ai/config.json` + `vector.sqlite*` → **`userData/ai/data/`**）；**`migrateAiDataCacheRoot`** / **`migrateBuiltinModelCacheRoot`**；**`data-cache-root.json`** 引导文件。
-- **`aiConfig.ts`**：在数据缓存根下读写 **`config.json`** 与默认值合并；合并 **`aiDataCacheDir`**、**`embedding.provider`** / **`builtinModel`** 等；API 密钥经 **`secretStorage`** 与磁盘配置分离。
+- **`aiConfig.ts`**：在数据缓存根下读写 **`config.json`** 与默认值合并；合并 **`aiDataCacheDir`**、**`embedding.provider`** / **`builtinModel`**、**`chatProfiles`** / **`txt2imgProfiles`** 等；API 密钥经 **`secretStorage`** 与磁盘配置分离（含各方案密钥 blob）。
 - **`aiVectorDb.ts`**：SQLite + sqlite-vec：分块、向量、`threads` / `messages` 表及迁移；库文件路径由 **`aiPaths.vectorDbFilePath`** 决定。
 - **`aiEmbedding.ts`**：`provider === "builtin"` 时走 **`embedding/localEmbeddingBackend`**（Transformers.js Worker）；否则 OpenAI 兼容 **`/embeddings`**；**`probeEmbeddingDimension`** 支持远程与内置。
 - **`embedding/localEmbeddingBackend.ts`**、**`embedding/embeddingWorker.ts`**：内置模型下载、加载、批嵌入与进度；缓存目录 **`{builtinModelCacheDir}/transformers-cache`**。
@@ -497,11 +506,11 @@ src/
 
 ###### `monaco/`
 
-- **`chapterStickyScroll.ts`**：注册折叠区与文档符号以驱动黏性章节大纲；禁用黏性条点击跳转。
+- **`chapterStickyScroll.ts`**：注册 DocumentSymbolProvider 以驱动 Monaco `stickyScroll`（outlineModel）黏性章节大纲；禁用黏性条点击跳转；`refreshStickyChapterScrollWidget` 在大纲/装饰更新后关开 sticky 以套用章节标题样式（与 `--reader-chapter-title`、`1.2em` 一致）。
 - **`readerEditorOptions.ts`**：阅读器 `create` / `updateOptions` 的选项构建（换行、只读/编辑 chrome、小地图、行号、stickyScroll 等）；垂直滚动条：**窗口只读 / 任意编辑** 为 `visible`（常显），**全屏只读** 为 `auto`（失焦淡出）。
 - **`readerInlineDecorations.ts`**：章节标题行内装饰；Monaco 主题 chrome（小地图/滚动条/选区/当前行）；**`buildChapterMinimapSectionHeaderDecorations`**（编辑态小地图节标题）；合并 `readerPalette` 与 **`highlightColors`** 生成 Monarch token 规则；自定义高亮词开启时并入 `txtrHighlightMonarch` 生成的规则。
 - **`readerMainMonaco.css`**（由 `ReaderMain` 引入）：小地图左侧阴影、滚动条轨道与滑块、概览尺层级（光标标记不被轨道遮挡）；全屏时小地图/滚动条/概览尺 `position: fixed` 贴视口右缘（见 **`appShell.css`**）。
-- **`readerImageViewZones.ts`**：插图行 `<<IMG:…>>` 的 ViewZone 与内嵌展示；返回删行前行号供流管道同步映射；与 `colortxt://` 本地资源协议衔接。
+- **`readerImageViewZones.ts`**：块级 `![…](…)` 删行并插 ViewZone；返回删行前行号供流管道同步映射；与 `colortxt://` 本地资源协议衔接。
 - **`readerKeyScroll.ts`**：方向键/Page 键滚动。
 - **`txtrHighlightMonarch.ts`**：由 `highlightWordsByIndex` 生成 `txtr.customHighlight.{index}` 类 Monarch 规则（更长词优先、同长则更小颜色索引优先；大小写不敏感）。
 - **`txtrTextMonarch.ts`**：自定义 Monarch：`txtr-text` 语言；标点/对话/数字等着色；可选注入上述自定义高亮规则。
@@ -516,16 +525,27 @@ src/
 
 ###### `ebook/`
 
-- **目录**：电子书 → ColorTxt：解析为 UTF-8 正文与可选插图资源（与 `shared/ebookExtensions.ts` 扩展名一致）；格式细节与缓存策略见下文 **「电子书解析与转换」**。
-- **`convertEbookToColorTxt.ts`**：按扩展名调度各解析器；`ensureEbookColorTxt`：严格 meta 缓存、`findReconciledConvertedTxt` 和解查找、写出 `{basename}.txt`。
-- **`ebookFormat.ts`**：是否电子书路径、与 TXT 合并的「支持书籍路径」、输出基名与文件名净化等。
-- **`ebookTypes.ts`**：转换产物类型（如 `ColorTxtArtifacts`：正文 + 可选 `imageWrites`）。
+- **目录**：电子书 → Markdown 的顶层入口；格式解析、目录注入与写出在子目录 **`convert/`**（与 `shared/ebookExtensions.ts` 扩展名一致）；细节见下文 **「电子书解析与转换」**。
+- **`ebookFormat.ts`**：是否电子书路径、与 TXT / `.md` 合并的「支持书籍路径」、输出基名与文件名净化等。
+- **`ebookTitleMatch.ts`**：`plainTextForEbookTitleMatch` 等，目录标题与正文行匹配用纯文本提取（去 span / ATX / 内链）。
 - **`pathUtils.ts`**：路径拼接与规范化（POSIX 风格片段，供转换与资源相对路径）。
 - **`yieldToUi.ts`**：长解析中分段 `await`，避免主线程长时间阻塞。
-- **`ebookInternalLinkMarkers.ts`**：正文内链标记 `<<ID:…>>` / `<<A:…|…>>` 及转义（阅读器内跳转）。
+
+###### `ebook/convert/`
+
+- **`convertEbookToMarkdown.ts`**：按扩展名调度各解析器；`ensureEbookMarkdown`：严格 meta 缓存、`findReconciledConvertedMd` 和解查找、写出 `{basename}.md`。
+- **`ebookTypes.ts`**：转换产物类型（如 `EbookMarkdownArtifacts`：正文 + 可选 `imageWrites`）。
 - **`parseEpub.ts`**：EPUB（ZIP）解析与转换；可尝试将 ZIP 当 EPUB 处理。
-- **`parseMobi.ts`**：MOBI / AZW3：经 `mobi/foliateMobi` 抽取再转 artifacts。
-- **`parsePdf.ts`**：PDF：`pdfjs-dist` 文本层抽取。
+- **`ebookTocAnchorInjection.ts`**：各格式嵌入目录注入 ATX `#` / `##` 与 `<span id="toc_N">`；`queueTocHeadingMutations`、`resolveTocInjectLineIdx`（仅精确标题匹配）。
+- **`ebookSpineLineMatch.ts`**：spine 节范围、`findTitleLineInSpineSection`（整行与目录标题完全一致）、`applyLineMutations`。
+- **`ebookTocTypes.ts`**：`EmbeddedTocEntry`、`dedupeEmbeddedTocEntries`、`flattenFoliateStyleTocTree`。
+- **`ebookEpubNav.ts`**：EPUB `nav` / NCX 展平为 `EmbeddedTocEntry`。
+- **`ebookMarkdownEmit.ts`**：`EbookMarkdownFragmentRegistry`、`<span id>`、`formatMdInternalLink`、`atxHeadingPrefix`。
+- **`ebookFootnoteLinkFragments.ts`**：脚注 noteref 同行尾部回跳 `fr_*` span。
+- **`ebookStemOnlyMdLinks.ts`**：无可见文案的 stem 内链 `[]` 形态。
+- **`ebookLinkIconHeuristics.ts`**：链接图标 vs 块级插图结构判定。
+- **`parseMobi.ts`**：MOBI / AZW3（KF8）：经 `mobi/foliateMobi` 抽取；`injectFoliateMobiTocIntoLines` 注入目录（`book.toc` 或 NCX 回退）。
+- **`parsePdf.ts`**：PDF：`pdfjs-dist` 文本层；`getOutline()` 书签大纲 → `injectPdfOutlineIntoLines`。
 - **`parseFb2.ts`**：FB2 / FBZ（ZIP 包 FB2）解析与转换。
 - **`parseChm.ts`**：CHM：目录与 HTML 遍历、插图写出；依赖 `chm/` 解压与读取。
 - **`chm/chmArchive.ts`**：CHM 文件表、块定位与原始块读取。
@@ -744,12 +764,12 @@ src/
 | `SettingsGeneralPanel.vue`                           | 「常规」：启动恢复上次文件、同步当前文件、历史条数、电子书转换缓存目录、章节最少字数、**清除缓存**按钮（向父组件 `clearCache`）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `SettingsReadingPanel.vue`                           | 「阅读」：字号/行高滑块、压缩空行保留一行、引号/括号跨行匹配、Monaco 平滑滚动、全屏正文区宽度。<br>（`monacoCustomHighlight` 来自 props，用于禁用跨行开关提示）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `SettingsEditPanel.vue`                              | 「编辑」：**显示行号**（`readerEditShowLineNumbers`）、**启用小地图**（`readerEditMinimap`）、**自动刷新章节列表**（`editAutoRefreshChapterList`；少于 `editAutoRefreshChapterListMaxLines` 行时编辑变更防抖刷新章节，否则侧栏显示「刷新章节」）                                                                                                                                                                                                                                                                                                                                                                                      |
-| `SettingsAIPanel.vue`                                | 「AI 阅读助手」：总开关；**服务商** + **接口地址**；API Key + **`AppConnectionTestButton`**；模型 / 温度等；Token 开关与单价；**`aiDataCacheDir`**；**`AppPullFlashButton`** 拉取聊天模型；**生成思维导图**、**词云图词项上限**（`wordcloudMaxWords`）；**快速提问**列表（**移动** 手柄拖动排序、`quickQuestionRowIds` 稳定 key、**恢复默认**） |
+| `SettingsAIPanel.vue`                                | 「AI 阅读助手」：总开关；独立 **配置方案** 区块（下拉 + 新建/重命名/删除）；**对话模型**（服务商、地址、Key、模型、温度等）；Token 开关与单价（随方案）；**`aiDataCacheDir`**；**`AppPullFlashButton`** 拉取聊天模型；**生成思维导图**、**词云图词项上限**（`wordcloudMaxWords`）；**快速提问**列表（**移动** 手柄拖动排序、`quickQuestionRowIds` 稳定 key、**恢复默认**） |
 | `ApiEndpointInput.vue`                               | 设置页接口地址输入（可选建议列表；对话页建议列表常为空，以服务商下拉为主）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `AiTokenUsageBanner.vue`                             | 阅读助手 / 角色检索共用的 Token 实际消耗条（`formatTokenUsageActualLine`、可选花费）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `AiIndexProgressBanner.vue`                          | 建索引 / 向量化进度文案（阅读助手建索引与角色 **AI 检索** 前补索引共用）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `SettingsVectorModelPanel.vue`                       | 「向量模型」：**模型来源**（内置 / 远程）。<br>**内置**：缓存目录、HF 镜像、模型下拉、下载/清除。<br>**远程**：服务商 + 地址 + Key + **`AppConnectionTestButton`** + **嵌入模型**（**`ApiEndpointInput`** + 拉取）；切块与 **`ragTopK`** |
-| `SettingsTxt2ImgPanel.vue`                           | 「角色卡」：**服务商**（两行下拉 + 默认地址/模型）+ **接口地址**；云端：**API 密钥**（**`AppConnectionTestButton`** 测试连接，不出图）+ **模型**（**`ApiEndpointInput`** 建议，可手输）+ **固定尺寸**下拉（本地仍为宽高）；OpenAI 系 **画质**下拉；A1111 采样 / 高清修复、Comfy 工作流；**`AppPullFlashButton`** 拉取采样器 / SD 模型。<br>**角色立绘缓存根目录** |
+| `SettingsTxt2ImgPanel.vue`                           | 「角色卡」：独立 **配置方案** 区块；**文生图 API 设置**（服务商两行下拉 + 默认地址/模型）+ **接口地址**；云端：**API 密钥**（**`AppConnectionTestButton`** 测试连接，不出图）+ **模型**（**`ApiEndpointInput`** 建议，可手输）+ **固定尺寸**下拉（本地仍为宽高）；OpenAI 系 **画质**下拉；A1111 采样 / 高清修复、Comfy 工作流；**`AppPullFlashButton`** 拉取采样器 / SD 模型。<br>**角色立绘缓存根目录**（全局，不随文生图方案变） |
 | `AppConnectionTestButton.vue`                        | 设置页共用 **测试连接**（图标 pending/成功/失败；成功不弹框；配置指纹变更后重置）；用于 AI 阅读助手、向量模型、角色卡文生图 |
 | `SettingsSkillsPanel.vue`                            | 「技能」：内置技能开关与覆盖、自定义技能列表；由父级 footer「添加技能」打开 **`SettingsSkillEditModal`**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `SettingsSkillEditModal.vue`                         | 自定义技能新建/编辑弹窗                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
@@ -793,17 +813,17 @@ src/
 
 ## 电子书解析与转换（`src/renderer/src/ebook`）
 
-渲染进程在**打开电子书**时将其转为 UTF-8 的 ColorTxt 正文（`.txt`），可选写出插图目录；转换与缓存逻辑集中在 `ebook/`，与 `shared/ebookExtensions.ts` 中的扩展名列表、`shared/ebookConvertPaths.ts` 中的默认输出子目录名保持一致（主进程目录扫描、壳层打开路径判定依赖前者）。
+渲染进程在**打开电子书**时将其转为 UTF-8 的 Markdown 正文（`.md`），可选写出插图目录；路径判定与让出 UI 在 `ebook/` 根目录，**格式解析、目录注入与写出**在 `ebook/convert/`，与 `shared/ebookExtensions.ts` 中的扩展名列表、`shared/ebookConvertPaths.ts` 中的默认输出子目录名保持一致（主进程目录扫描、壳层打开路径判定依赖前者）。
 
 ### 支持的格式与入口
 
 | 扩展名            | 说明                                                                                                               |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `.epub`           | ZIP 容器，走 `parseEpub.ts`                                                                                        |
-| `.mobi` / `.azw3` | 先尝试 `tryConvertZipAsEpub`（部分 AZW3 实为 ePub 封装）；否则经 `mobi/foliateMobi` 抽取后由 `parseMobi.ts` 转产物 |
-| `.fb2` / `.fbz`   | FB2 或 ZIP 内单 FB2，`parseFb2.ts`                                                                                 |
-| `.pdf`            | `pdfjs-dist` 文本层，`parsePdf.ts`                                                                                 |
-| `.chm`            | `parseChm.ts`；底层块读取与 LZX 在 `chm/chmArchive.ts`、`chm/lzxDecode.ts`                                         |
+| `.epub`           | ZIP 容器，走 `convert/parseEpub.ts`                                                                                        |
+| `.mobi` / `.azw3` | 先尝试 `tryConvertZipAsEpub`（部分 AZW3 实为 ePub 封装）；否则经 `convert/mobi/foliateMobi` 抽取后由 `convert/parseMobi.ts` 转产物 |
+| `.fb2` / `.fbz`   | FB2 或 ZIP 内单 FB2，`convert/parseFb2.ts`                                                                                 |
+| `.pdf`            | `pdfjs-dist` 文本层 + **`getOutline()` 书签目录**，`convert/parsePdf.ts`                                                   |
+| `.chm`            | `convert/parseChm.ts`；底层块读取与 LZX 在 `convert/chm/chmArchive.ts`、`convert/chm/lzxDecode.ts`                                         |
 
 `ebookFormat.ts` 提供 `isEbookFilePath`、`isMarkdownFilePath`、`isSupportedBookPath`（TXT、`.md` + 上述电子书扩展名）、输出用基名 `ebookSourceFileBaseForOutput`（含 Windows 非法字符净化 `sanitizeWindowsFilenameSegment`）。拖放 / 关联打开时 `useAppWindowBindings` 用 `isSupportedBookPath` 过滤；主进程 `ipcHandlers` 的目录枚举用 `EBOOK_DOT_EXTENSIONS` 与 `.txt`、`.md` 一并收集。
 
@@ -811,69 +831,120 @@ src/
 
 - **打开**：`resolvePhysicalTextForOpen` 对非电子书路径直接流式读盘（与 `.txt` 相同），`physicalReaderPath` 指向 `.md` 原文件。
 - **章节**：仅识别 ATX 标题（`#` … `######`，行首最多 3 个空白）；`markdownBlockContext` 在围栏代码块与 4 空格/TAB 缩进代码块内跳过 `#`；章节扫描基于**物理行**，避免「行首缩进」展示层误判；侧栏 `headingLevel` 每级缩进 10px；顶栏「章节匹配规则」对 `.md` 禁用。
-- **插图（只读）**：`markdownImages` 将 `![alt](url)` 展开为独占行 `<<IMG:payload>>`，再复用 `readerImageViewZones`；`https:` URL 直链，`img-src` CSP 含 `https:`；编辑模式不展开，保存仍写回 `.md` 原文。
+- **插图（只读）**：`markdownImages` 扫描独占行 `![alt](url)`，`readerImageViewZones` 删源行并插 ViewZone；`https:` URL 直链，`img-src` CSP 含 `https:`；编辑模式不处理，保存仍写回 `.md` 原文。
 
 - 基于 [libmspack](https://github.com/kyz/libmspack)（GNU GPL）移植了一套 JavaScript 实现，以支持对 `.chm` 格式的解析
 - 其他电子书格式的解析，主要参考 [foliate-js](https://github.com/johnfactotum/foliate-js)（MIT）
 
 ### 转换管线与输出布局
 
-- **调度**：`convertEbookToColorTxt.ts` 中 `convertBookBufferToArtifacts(absSource, buffer)` 按源路径后缀分派各 `parse*.ts`，得到 `ColorTxtArtifacts`（`ebookTypes.ts`：`utf8` + 可选 `imageWrites`，每项含相对路径与 `ArrayBuffer`）。
-- **写出**：`writeEbookConversionArtifacts` 将正文写入目标 `.txt`，插图按 `relativePath` 写到与 `{basename}.txt` **同目录**下；约定目录名为 **`{basename}.Images/`**（由 `imagesDirAbsBesideConvertedTxt` 与相对路径前缀一致）。无插图时会 `removePath` 清理残留插图目录。
-- **正文后处理**：非空行且非独占行的 `<<IMG:…>>` 会在行首加两个全角空格（与阅读器「行首缩进」视觉一致）；空行与插图锚行不改动（见 `indentConvertedTxtPlainLines`）。
-- **让出 UI**：`yieldToUi.ts` 用 `setTimeout(0)` 在长时间解析前后打断，便于底栏「转换中…」等状态刷新；`readBookAsArrayBuffer` 与 `ensureEbookColorTxt` 内多处调用。
+- **调度**：`convert/convertEbookToMarkdown.ts` 中 `convertBookBufferToArtifacts(absSource, buffer)` 按源路径后缀分派各 `parse*.ts`，得到 `EbookMarkdownArtifacts`（`convert/ebookTypes.ts`：`utf8` + 可选 `imageWrites`，每项含相对路径与 `ArrayBuffer`）。
+- **写出**：`writeEbookConversionArtifacts` 将正文写入目标 `.md`，插图按 `relativePath` 写到与 `{basename}.md` **同目录**下；约定目录名为 **`{basename}.Images/`**（由 `imagesDirAbsBesideConvertedMd` 与相对路径前缀一致）。无插图时会 `removePath` 清理残留插图目录。
+- **输出格式**：正文为 `{basename}.md`；块级图为独占行 `![…](rel)`，行内链为 `[…](#frag)`，锚点为 `<span id="…"></span>`。
+- **让出 UI**：`ebook/yieldToUi.ts` 用 `setTimeout(0)` 在长时间解析前后打断，便于底栏「转换中…」等状态刷新；`readBookAsArrayBuffer` 与 `ensureEbookMarkdown` 内多处调用。
 
 ### 输出路径与缓存
 
-- **目标 `.txt` 路径（写入与严格缓存的参照）**：
-    - `resolveConvertedTxtOutputPaths`：基名为源文件名整段（经 `ebookSourceFileBaseForOutput` 净化，如 `abc.epub` → `abc.epub.txt`）。
+- **目标 `.md` 路径（写入与严格缓存的参照）**：
+    - `resolveConvertedMdOutputPaths`：基名为源文件名整段（经 `ebookSourceFileBaseForOutput` 净化，如 `abc.epub` → `abc.epub.md`）。
     - `ebookConvertOutputDir`（`colorTxt.ui.settings`）**非空**时输出到该目录；**空字符串**表示与**源书同目录**。
-    - 新安装或尚无该键时，默认 **`app.getPath("userData")/ConvertedTxt`**（目录名见 `shared/ebookConvertPaths.ts`，preload `getDefaultEbookConvertOutputDir`）。
-- **严格缓存命中**：`ensureEbookColorTxt` 在同时满足下列条件下直接复用、不再解析：`file.meta` 中 **`convertedTxtPath` 与当前策略算出的目标路径一致**（与 `resolveConvertedTxtOutputPaths` 逐路径规范化比较）、**`sourceMtimeMsAtConvert` 与当前源 `mtimeMs` 一致**，且对该路径 `stat` 仍为普通文件。
+    - 新安装或尚无该键时，默认 **`app.getPath("userData")/ConvertedTxt`**（目录名见 `shared/ebookConvertPaths.ts`，preload `getDefaultEbookConvertOutputDir`；缓存文件扩展名为 `.md`）。
+- **严格缓存命中**：`ensureEbookMarkdown` 在同时满足下列条件下直接复用、不再解析：`file.meta` 中 **`convertedMdPath` 与当前策略算出的目标路径一致**（与 `resolveConvertedMdOutputPaths` 逐路径规范化比较）、**`sourceMtimeMsAtConvert` 与当前源 `mtimeMs` 一致**，且对该路径 `stat` 仍为普通文件。
 - **和解查找（路径无效统一处理）**：
-    - **何时视为「路径无效」**：meta 中无 `convertedTxtPath`（空或未写入），或「有路径但严格缓存未通过」——共用同一套和解逻辑。
-    - **何时执行和解**：仅当 **无记录路径**，或 **记录的源 mtime 与当前源 `mtimeMs` 一致（`mtimeStable`）** 时才和解，避免源书已更新仍复用旧的 `{basename}.txt`。
-    - **实现**：**`findReconciledConvertedTxt`** 对候选路径规范化去重后依次 `stat`，**第一个存在的普通文件**即复用结果。
-    - **候选顺序**：若 `mtimeStable` 且 meta 曾有非空路径，**优先该路径**（例如输出目录变更后旧文件仍留在原记录路径）；然后 **当前设置的输出目录**（非空时）下的 `{basename}.txt`；**源书同目录**下的 `{basename}.txt`；**默认 `userData/ConvertedTxt`** 下同名文件。
-    - **无命中**：完整转换 `readBookAsArrayBuffer` → `convertBookBufferToArtifacts` → `writeEbookConversionArtifacts`（写出路径为当前策略下的 `convertedTxtPath`）。
+    - **何时视为「路径无效」**：meta 中无 `convertedMdPath`（空或未写入），或「有路径但严格缓存未通过」——共用同一套和解逻辑。
+    - **何时执行和解**：仅当 **无记录路径**，或 **记录的源 mtime 与当前源 `mtimeMs` 一致（`mtimeStable`）** 时才和解，避免源书已更新仍复用旧的 `{basename}.md`。
+    - **实现**：**`findReconciledConvertedMd`** 对候选路径规范化去重后依次 `stat`，**第一个存在的普通文件**即复用结果。
+    - **候选顺序**：若 `mtimeStable` 且 meta 曾有非空路径，**优先该路径**（例如输出目录变更后旧文件仍留在原记录路径）；然后 **当前设置的输出目录**（非空时）下的 `{basename}.md`；**源书同目录**下的 `{basename}.md`；**默认 `userData/ConvertedTxt`** 下同名文件。
+    - **无命中**：完整转换 `readBookAsArrayBuffer` → `convertBookBufferToArtifacts` → `writeEbookConversionArtifacts`（写出路径为当前策略下的 `convertedMdPath`）。
 - **meta 写回与打开路径**：
-    - `useAppFileSession.resolvePhysicalTextForOpen` 在 `ensureEbookColorTxt` 后调用 `setEbookConvertedMeta`，写入 `convertedTxtPath` 与 `sourceMtimeMsAtConvert`，并 `persistFileMeta`。
-    - 流式管道使用的 `physicalPath` 为转换后的 `.txt`；**逻辑上书路径**仍为源电子书路径；`currentFile`、会话、最近打开以**源书路径**为键。
+    - `useAppFileSession.resolvePhysicalTextForOpen` 在 `ensureEbookMarkdown` 后调用 `setEbookConvertedMeta`，写入 `convertedMdPath` 与 `sourceMtimeMsAtConvert`，并 `persistFileMeta`。
+    - 流式管道使用的 `physicalPath` 为转换后的 `.md`；**逻辑上书路径**仍为源电子书路径；`currentFile`、会话、最近打开以**源书路径**为键。
 
-### 内链标记与阅读器衔接
+### Markdown 内链/锚点与阅读器衔接
 
-解析器可在正文中嵌入：
+转换输出在 `.md` 中使用标准 Markdown 扩展语法（非旧版 `<<ID>>` / `<<A>>` / `<<IMG>>` 特殊标记）：
 
-- **`<<ID:…>>`**：锚点。
-- **`<<A:可见文案|目标ID>>`**：可点击链接。  
-  转义规则见 `ebookInternalLinkMarkers.ts` 文件头注释；各格式下 `目标 ID` 形态（如 EPUB 为 `文件名#片段`、MOBI 为 `mobi-NNNN#片段`）由对应 `parse*.ts` 约定。
+- **`<span id="frag"></span>`**：锚点（fragment 经 `EbookMarkdownFragmentRegistry` 去重，如 `f_1_2`、`fr_1_2`、`toc_1`）。
+- **`[可见文案](#frag)`** / **`[![alt](icon)](#frag "title/alt")`**：内链；脚注 noteref 为跳转链 + 同行尾部回跳 `fr_*` span。
+- **独占行 `![alt](rel)`**：块级插图；阅读器删行后插 ViewZone。
 
-`ReaderMain.vue` 载入正文后调用 `stripEbookIdAndAMarkersFromText`：
+**链接图标 vs 块级插图（转换分流）：**
 
-- 去掉 `<<ID:…>>`，将 `<<A:…>>` 替换为可见文案；建立 `id → 物理行`、内链点击区间与「行首链内标签」映射。
-- 与压缩空行配合时使用 `ebookDisplayLineToPhysical` / `ebookAnchorPhysicalToDisplay`（见 `reader/ebookAnchorLookup.ts`）。
-- 章节检测侧用 `leadingEbookLinkLabelsByLine` 识别**假章节**（标题以链内链接文案为前缀时跳过）。
+| 结构 | 输出 |
+|------|------|
+| `<a>` 内仅 `img` / `noteref` 上下文内小图 | 行内 `[![…](icon)](#frag)` |
+| `<figure>` 内独立图、段落中无 `<a>` 包裹的 `img` | 独占行 `![…](rel)` + ViewZone |
 
-插图行 **`<<IMG:…>>`**：
+**格式覆盖：** EPUB、MOBI/AZW3、FB2/FBZ 已对齐；CHM、PDF 亦输出 `.md`。**需重新转换**（或删缓存 `.md`）后阅读器才生效。
 
-- 由 `monaco/readerImageViewZones.ts` 等与 `pathUtils`（POSIX 片段拼接）配合展示，依赖 `colortxt://` 访问写出后的图片。
-- 从 Monaco 正文中删除插图锚点独占行，并返回删行前的 Monaco 行号（降序）。
-- `useTxtStreamPipeline.removeFilteredDisplayLinesAtOriginalIndices` 在压缩空行模式下据此同步裁剪 `filteredDisplayToPhysicalLine`，避免映射与正文行数不一致导致搜索/恢复错位。
+### 嵌入目录与 ATX 章节注入
+
+阅读器侧栏「章节」仅识别 ATX 标题（`#` … `######`，见 **`markdownChapter.ts`**）。转换阶段从各格式**嵌入目录**写入 ATX 与 `<span id="toc_N"></span>`，使章节列表尽量与源书 TOC 一致（不另写独立目录块）。
+
+**写入形态**（`convert/ebookTocAnchorInjection.ts`）：
+
+- `<span id="toc_N"></span>` 与 ATX 标题分两行；`applyLineMutations` 按行号降序应用，保证同索引先写标题、再 insert 锚点（锚点在上）。
+- 节内已定位到标题行且纯文本与目录**完全一致**时：在该行 **replace** 升 ATX（保留行首已有 id span）。
+- 节首 **fallback**（无精确匹配）：插入**完整目录标题**（如 `# 卷一 周纪一`）；节首为插图/正文时 `shouldReplaceLineWhenInjectingTocHeading` 为 false，**insert** 不覆盖原行。
+
+**标题匹配（EPUB / MOBI / AZW3，共用 `convert/ebookSpineLineMatch.ts`）**：
+
+- `findTitleLineInSpineSection`：**仅精确匹配**——节内某行去 span / 内链后的纯文本须与目录标题完全相同。
+- **已移除**「包含」匹配（`want.includes(plain)`）与按标点拆段的子串匹配，避免目录为 `卷一 周纪一`、正文为两行 `卷一` + `周纪一` 时误将 `卷一` 升为 `# 卷一`。
+- `resolveTocInjectLineIdx` **不再**用 fragment 锚点行作为升 ATX 目标；无精确匹配即走节首 fallback。侧栏以目录原文为准，正文可能与标题重复，属可接受取舍。
+- 搜索范围限定在**当前 spine 节**（`EpubSpineSectionRange`），按 `tocOrder` 与 `searchStartByStem` 顺序处理多项。
+
+**各格式目录来源与注入入口**：
+
+| 格式 | 目录来源 | 注入 |
+| ---- | -------- | ---- |
+| EPUB | `nav` / NCX → `ebookEpubNav` → `flattenFoliateStyleTocTree` | `injectEpubTocAnchorsIntoLines` |
+| MOBI | foliate `book.toc`；缺失时 `buildMobiTocTreeFromNcx` | `injectFoliateMobiTocIntoLines`（`convert/parseMobi.ts`） |
+| AZW3 | 与 MOBI 相同：`convert/convertEbookToMarkdown` 先 `tryConvertZipAsEpub`，否则 **`convertMobiToArtifacts`**（KF8 / `convert/mobi/foliateMobi.js`） |
+| PDF | `pdfjs-dist` **`doc.getOutline()`**（与 foliate-js 一致，读 PDF Document Outline / 书签） | `injectPdfOutlineIntoLines`（`convert/parsePdf.ts`） |
+
+**PDF 专项**（`convert/parsePdf.ts`）：
+
+- 每页正文拆为独立 `lines` 行（非整页压成一行），便于按行精确匹配。
+- 页内优先**整行精确匹配**书签标题；同页多节辅以书签 dest 的 **Y 坐标**（`findPdfLineByDestY`，仅考虑短行）。
+- **仅精确匹配**时对命中行 replace 升 ATX；**Y 定位**时 **insert** 标题，**不 replace**，避免吞掉正文行。
+- 标题被 PDF 文本层拆成相邻两行时：拼接后精确匹配，升 ATX 并清空续行（如「…开把」+「簧」）。
+- 无匹配则**跳过**该书签项，不在页内堆叠多个 fallback 假标题。
+- 纯页锚点 `<span id="pdf-pN">` 行不直接升 ATX（与 MOBI `filepos` 锚点行处理思路一致）。
+
+**MOBI 历史注意点**：目录项须**标题匹配优先**于 fragment；纯 `filepos` / 锚点独占行在下一行升 ATX，避免 `#` 写在 span 同行。
+
+底栏对源电子书提供 **「重新转换」**（`forceEbookConvert`）；修改注入逻辑后须重新转换方更新已缓存 `.md`。
+
+### 黏性章节条（sticky scroll）
+
+Monaco `stickyScroll` + `chapterStickyScroll.ts` 的 DocumentSymbolProvider 在阅读区顶部显示当前章节大纲。`ReaderMain.setChapters` 在更新章节装饰与文档符号后调用 **`scheduleStickyChapterScrollRefresh`**（内部 **`refreshStickyChapterScrollWidget`**：短暂关闭再开启 sticky），避免重新加载后黏性条仍用旧渲染、标题样式（颜色/字号）未与正文 `.chapterTitleLine` 同步的问题。
+
+`ReaderMain.vue` 载入 `.md` 后：
+
+- `applyEmbeddedImageAnchors`：`collectBlockMarkdownImageLines` → ViewZone。
+- `applyMarkdownInternalLinks`：`stripMdInternalLinksFromText` 剥离 `<span id>` / 内链语法，安装侧车（`id → 物理行`、点击区间、行首链内 label）。
+- 含 `iconRel` 的内链用 `.readerEbookLinkIcon` 与 `colortxt-local://` 背景图；纯文字链为 `.readerEbookInternalLink` 下划线。
+- 与展示行↔物理行映射配合：`ebookDisplayLineToPhysical` / `ebookAnchorPhysicalToDisplay`（插图删行后映射须同步）。
+- **大文件性能**：脚注极多时加载在侧车中批量处理；点击在 `editorHost` 捕获阶段统一命中；装饰仅注册视口 ± 约 80 行。
 
 ### 目录与文件速查
 
 | 文件 / 目录                                                                     | 职责                               |
 | ------------------------------------------------------------------------------- | ---------------------------------- |
-| `convertEbookToColorTxt.ts`                                                     | 调度解析、路径解析、缓存、写出产物 |
-| `ebookFormat.ts` / `ebookTypes.ts`                                              | 路径判定、产物类型                 |
-| `pathUtils.ts`                                                                  | 路径 join / dirname（FS 语义）     |
-| `yieldToUi.ts`                                                                  | 解析前后让出主线程                 |
-| `ebookInternalLinkMarkers.ts`                                                   | 内链标记解析、剥离与章节辅助       |
-| `parseEpub.ts` / `parseMobi.ts` / `parsePdf.ts` / `parseFb2.ts` / `parseChm.ts` | 各格式实现                         |
-| `chm/`                                                                          | CHM 归档与 LZX 解码                |
-| `mobi/`                                                                         | Foliate MOBI 引擎脚本与类型声明    |
+| `ebook/ebookFormat.ts` / `ebook/ebookTitleMatch.ts`                             | 路径判定、目录标题匹配用纯文本     |
+| `ebook/pathUtils.ts` / `ebook/yieldToUi.ts`                                     | 路径 join / dirname、解析让出 UI   |
+| `ebook/convert/convertEbookToMarkdown.ts`                                       | 调度解析、路径解析、缓存、写出产物 |
+| `ebook/convert/ebookTypes.ts`                                                   | 转换产物类型                       |
+| `markdown/markdownInternalLinks.ts` / `markdown/markdownLinkShared.ts`          | MD 内链解析、剥离与章节辅助（阅读器） |
+| `ebook/convert/ebookTocAnchorInjection.ts` 等                                   | 嵌入目录 → ATX / toc span 注入     |
+| `ebook/convert/ebookEpubNav.ts` / `ebook/convert/ebookMarkdownEmit.ts`          | EPUB 目录解析、锚点与 MD 语法发射   |
+| `ebook/convert/ebookLinkIconHeuristics.ts`                                      | 链接图标 vs 块级插图结构判定       |
+| `ebook/convert/parse*.ts`                                                       | 各格式实现                         |
+| `ebook/convert/chm/`                                                            | CHM 归档与 LZX 解码                |
+| `ebook/convert/mobi/`                                                           | Foliate MOBI 引擎脚本与类型声明    |
 
-新增格式时：在 `shared/ebookExtensions.ts` 增加扩展名；主进程 `isTxtOrEbookFileName` 与 `isSupportedShellOpenPath` 会自动跟随；在 `convertBookBufferToArtifacts` 与 `EBOOK_DOT_EXTENSIONS` 中补全分支与列表；若需新资源类型，扩展 `ColorTxtArtifacts.imageWrites` 或正文约定即可。
+新增格式时：在 `shared/ebookExtensions.ts` 增加扩展名；主进程 `isTxtOrEbookFileName` 与 `isSupportedShellOpenPath` 会自动跟随；在 `convertBookBufferToArtifacts` 与 `EBOOK_DOT_EXTENSIONS` 中补全分支与列表；若需新资源类型，扩展 `EbookMarkdownArtifacts.imageWrites` 或正文约定即可。
 
 ## 全屏阅读与浮动 UI
 
@@ -947,6 +1018,7 @@ src/
 - **菜单项**（均受「整体在窗口内」夹取；某条不可用时仍显示为 **disabled**）：
   - **在文件管理器中显示**：与 **`revealCurrentFileInFolder`** 一致，目标路径为 **`physicalReaderPath ?? currentFile ?? ebookConversionSourcePath`**（无可用路径时 disabled）。
   - **重新加载**：**`openFilePath(currentFile, { keepSidebarTab: true })`**；无 **`currentFile`**、**`loading`** 或 **`ebookParsing`** 时为 disabled。
+  - **重新转换**（仅源路径为电子书且当前会话已打开转换后的 `.md`）：**`openFilePath(..., { forceEbookConvert: true, keepSidebarTab: true })`**，忽略缓存、强制重跑 `convertBookBufferToArtifacts`；**`warning`** 样式菜单项。
   - **关闭文件**：**`closeCurrentFile`**（**danger** 样式）；无 **`currentFile`** 时 disabled。
 
 ### 右侧编码
@@ -1155,6 +1227,21 @@ src/
 - **角色卡 3D 倾斜与闪卡纹理**：侧栏 **「角色」→ 更多 → 卡片效果** 子菜单切换全局纹理（持久化 **`characterCardTextureEffect`**，默认 **细腻光泽**）；详见下节 **「角色卡 3D 倾斜与闪卡纹理」**。实现思路及部分样式、贴图参考 [pokemon-cards-css](https://github.com/simeydotme/pokemon-cards-css)（见 README 致谢）。
 - **技能与 Agent**：内置技能元数据与用户覆盖见 `@shared/aiSkills`；Agent 工具名与主进程 **`aiAgentTools.ts`** 对齐（`@shared/aiAgentSkillToolNames`）。流式对话与工具事件经 **`aiAgentChat.ts`** 推送到渲染层（`window.colorTxt.ai.onAgentEvent`）。
 - **会话与配置**：每本书（内容哈希）多会话，消息存 **同一向量库文件** 内 SQLite 表。运行时 **`config.json`** 位于 **AI 数据缓存根**（**不含**聊天正文；含 **`showTokenUsage`**、**`chat.tokenPricePerMillion`**、**`aiDataCacheDir`**、**`wordcloudMaxWords`**、**`autoMindmapOnSummaryAndCharacters`**、**`embedding.*`** 等，API Key 不落盘明文）。默认对话 Base URL 为 **`http://127.0.0.1:1234/v1`**（本地 LM Studio）。聊天 / 嵌入 / 文生图请求由主进程代理，经 IPC 流式回传（可中止）。
+
+### 对话模型 / 文生图配置方案
+
+**对话模型**与**文生图 API** 各自维护多套独立命名方案（**`chatProfiles` / `txt2imgProfiles`**，各最多 12 套），互不绑定：例如对话用 DeepSeek、立绘用本地 A1111。
+
+| 项目 | 说明 |
+| ---- | ---- |
+| 设置入口 | **AI 阅读助手** / **角色卡** 页各自独立的 **配置方案** 区块（与「对话模型」「文生图 API 设置」同级） |
+| 当前方案 | 下拉选中项为编辑对象；点设置 **确定** 后写入 **`activeChatProfileId`** / **`activeTxt2ImgProfileId`**，并同步到运行时 **`cfg.chat`** / **`cfg.txt2img`** 快照 |
+| 方案内容 | 对话方案含完整 **`AIChatEndpoint`**（含 **`systemPromptExtra`**、Token 单价等）；文生图方案含完整 **`AITxt2ImgConfig`**（含 **`enabled`**、后端、密钥、采样/尺寸/Comfy 工作流等） |
+| 不随方案变 | 向量模型、RAG 切块、快速提问、数据缓存目录、立绘缓存根目录、技能、语音朗读等仍为全局项 |
+| API 密钥 | 各方案密钥加密存于 **`SECRET_SLOT_AI_CHAT_PROFILE_KEYS`** / **`SECRET_SLOT_AI_TXT2IMG_PROFILE_KEYS`**（JSON 映射）；活跃方案密钥同时写入旧槽 **`ai.chat.apiKey`** / **`ai.txt2img.apiKey`** 以兼容现有读取路径 |
+| 侧栏 | 无方案切换 UI；设置保存后 **`aiAssistantConfigSyncNonce`** 递增，阅读助手重新拉取对话模型列表 |
+
+实现见 **`@shared/aiEndpointProfiles`**、**`aiConfig.ts`**（载入时旧版单套配置自动迁移为名为「默认」的首套方案）。
 
 ### 对话模型服务商
 
@@ -1448,7 +1535,7 @@ cardShellWrap（悬停抬高 z-index）
 | `colorTxt.ui.settings`  | 界面与阅读偏好：字体、字号与行高倍数，空行压缩/行首缩进、**`readerEditShowLineNumbers`**、**`readerEditMinimap`**、**`editAutoRefreshChapterList`**、高级换行、内容着色，**`monacoCustomHighlight`**，**Monaco 平滑滚动 `monacoSmoothScrolling`**，**`highlightColorsLight` / `highlightColorsDark`**（长度不足 `MIN_HIGHLIGHT_COLORS` 时解析失败则回退默认；与默认逐项相同可不写入），**`highlightWordsByIndexGlobal`**（已收藏高亮词），章节匹配规则、主题、侧栏是否展开，侧栏宽度、章节字数显示，启动是否恢复会话、最近文件条数上限、全屏正文区宽度，**`ebookConvertOutputDir`**（空串表示与源书同目录；首次无该键时默认 **`userData/ConvertedTxt`**），**`fileCategory`**、**`fileSort`**、**`fileCategoryCatalog`**，**可选 `shortcutBindings`**，**`readerPaletteOverridesLight` / `readerPaletteOverridesDark`** 等。**AI 与立绘缓存相关字段**（`aiSkillsEnabled`、`aiSkillOverrides`、`aiCustomSkills`、`aiAssistantDeepThinking`、`aiAssistantSpoilerSafe`、`characterPortraitCacheDir`、**`characterCardTextureEffect`** 等）见 **「AI 阅读助手与相关能力」** →「`localStorage` 与 `file.meta` 中的 AI 相关键」。完整字段见 `PersistedSettingsData` / `cacheStore.ts`。 |
 | `colorTxt.session`      | 会话快照：当前文件路径、视口底部物理行号（`viewportBottomLine`，用于下次启动恢复阅读位置；是否恢复受设置项控制；章节列表在重新打开文件后由流式解析生成）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `colorTxt.file.list`    | 导入目录后的文件列表缓存：每项为 `TxtFileItem`（`path`、`name`、`size`，可选 **`category`**、**`addedAt`**）；与侧栏分类筛选、排序及 `fileListService` 规范化一致                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `colorTxt.file.meta`    | 按文件路径聚合的元数据：书签、阅读进度百分比、**Monaco `saveViewState()`**（`editorViewState`）、**`viewportTopPhysicalLine`**、**`highlightWordsByIndex`**；**电子书**：**`convertedTxtPath`**、**`sourceMtimeMsAtConvert`**。**角色侧栏相关字段**（`characterRoster`、`characterBookStyle` 等）见 **「AI 阅读助手与相关能力」** →「`localStorage` 与 `file.meta` 中的 AI 相关键」。其它字段见 `FileMetaRecord` / `fileMetaStore.ts`。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `colorTxt.file.meta`    | 按文件路径聚合的元数据：书签、阅读进度百分比、**Monaco `saveViewState()`**（`editorViewState`）、**`viewportTopPhysicalLine`**、**`highlightWordsByIndex`**；**电子书**：**`convertedMdPath`**、**`sourceMtimeMsAtConvert`**。**角色侧栏相关字段**（`characterRoster`、`characterBookStyle` 等）见 **「AI 阅读助手与相关能力」** →「`localStorage` 与 `file.meta` 中的 AI 相关键」。其它字段见 `FileMetaRecord` / `fileMetaStore.ts`。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `colorTxt.recent.files` | 最近打开记录：JSON 数组，每项**仅允许** `{ "path": "<文件路径>" }` 单键对象（MRU 顺序）；条数上限由设置决定（0～1000，默认 20，0 表示不记录）。阅读进度与视口恢复一律查 `colorTxt.file.meta`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 阅读进度口径说明：
@@ -1505,7 +1592,7 @@ cardShellWrap（悬停抬高 z-index）
 | 文件                                                   | 说明                                                                                       |
 | ------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
 | `window-bounds.json`（位于 `app.getPath("userData")`） | 保存普通窗口态下的位置与尺寸；全屏/最大化/最小化时不会写入                                 |
-| `ConvertedTxt/`（默认子目录）                          | 电子书转换得到的 `.txt` 缓存（路径受 `ebookConvertOutputDir` 控制）                        |
+| `ConvertedTxt/`（默认子目录）                          | 电子书转换得到的 `.md` 缓存（路径受 `ebookConvertOutputDir` 控制）                        |
 
 ## 预设字体与平台映射
 

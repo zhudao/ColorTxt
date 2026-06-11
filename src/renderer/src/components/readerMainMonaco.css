@@ -33,14 +33,63 @@
   height: auto !important;
 }
 
-.monaco-editor .readerEbookInternalLink {
-  text-decoration: underline;
-  cursor: pointer;
-  color: color-mix(
+.monaco-editor {
+  --reader-ebook-link-color: color-mix(
     in srgb,
     var(--vscode-textLink-foreground, #569cd6) 90%,
     var(--vscode-editor-foreground, #ccc)
   );
+}
+
+.monaco-editor .readerEbookInternalLink,
+.monaco-editor .readerEbookExternalLink {
+  text-decoration: none;
+  cursor: pointer;
+  color: var(--reader-ebook-link-color);
+}
+
+.monaco-editor .readerEbookInternalLink:hover {
+  text-decoration: underline;
+}
+
+.monaco-editor .readerEbookExternalLink:hover {
+  text-decoration: underline;
+  text-decoration-style: dashed;
+}
+
+.monaco-editor .readerEbookLinkIcon {
+  cursor: pointer;
+  color: transparent !important;
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  font-size: 1em !important;
+  vertical-align: -0.15em;
+  overflow: hidden;
+  line-height: 1em;
+}
+
+.monaco-editor .readerEbookLinkIcon::before {
+  content: "";
+  display: block;
+  width: 100%;
+  height: 100%;
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
+}
+
+.monaco-editor .readerEbookLinkIcon--builtin-link::before {
+  background-color: var(--reader-ebook-link-color);
+  background-image: none;
+  mask-image: url("../assets/link.svg");
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  -webkit-mask-image: url("../assets/link.svg");
+  -webkit-mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
 }
 
 .monaco-editor .readerInlineSearchMatch {
@@ -80,27 +129,73 @@
 }
 
 /*
- * 装饰器 / 内容 hover 外层为 `.monaco-resizable-hover`，高度常略大于内层 `.monaco-hover`；
- * Monaco 默认只给内层铺 `editorHoverWidget-background`，多出的纵向区域会透出阅读器背景；
- * 小字号时一行文案更矮，空白更明显；
- * 给 .monaco-editor .monaco-resizable-hover 补上与悬停面板一致的背景
+ * 脚注等长文案悬停：Monaco 内建 DomScrollableElement，超高时按需出滚动条。
+ * 勿 flex 居中 / pointer-events:none，否则内容被裁切且无法移入面板滚动。
+ * `overflowWidgetsDomNode: body` 后 VS Code 主题变量不在作用域，须用 `--panel` 等全局回退。
  */
-.monaco-editor .monaco-resizable-hover {
-  background-color: var(--vscode-editorHoverWidget-background);
-  display: flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  pointer-events: none !important;
+.monaco-editor .monaco-resizable-hover,
+body > .overflowingContentWidgets .monaco-resizable-hover,
+.overflowingContentWidgets .monaco-resizable-hover {
+  background-color: var(
+    --vscode-editorHoverWidget-background,
+    var(--panel)
+  ) !important;
+  pointer-events: auto !important;
+  z-index: 10050;
 }
 
-/* .monaco-editor .monaco-resizable-hover {
-  border: none !important;
-}
-
-.monaco-editor .monaco-resizable-hover > .monaco-hover {
-  border: 1px solid var(--vscode-editorHoverWidget-border) !important;
+.monaco-editor .monaco-resizable-hover > .monaco-hover,
+body > .overflowingContentWidgets .monaco-resizable-hover > .monaco-hover,
+.overflowingContentWidgets .monaco-resizable-hover > .monaco-hover {
+  background-color: var(
+    --vscode-editorHoverWidget-background,
+    var(--panel)
+  ) !important;
+  color: var(--vscode-editorHoverWidget-foreground, var(--fg)) !important;
+  border: 1px solid
+    var(--vscode-editorHoverWidget-border, var(--border)) !important;
   border-radius: 3px !important;
-} */
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--fg) 12%, transparent);
+  pointer-events: auto !important;
+}
+
+/* 挂到 body 的悬停滚动条：沿用阅读区滚动条色，超长脚注可拖滑块阅读 */
+body > .overflowingContentWidgets .monaco-hover .monaco-scrollable-element > .scrollbar,
+.overflowingContentWidgets .monaco-hover .monaco-scrollable-element > .scrollbar {
+  background: var(--vscode-scrollbar-background, var(--scrollbar-track)) !important;
+}
+
+body > .overflowingContentWidgets
+  .monaco-hover
+  .monaco-scrollable-element
+  > .scrollbar
+  > .slider,
+.overflowingContentWidgets
+  .monaco-hover
+  .monaco-scrollable-element
+  > .scrollbar
+  > .slider {
+  background: var(
+    --vscode-scrollbarSlider-background,
+    var(--scrollbar-thumb)
+  ) !important;
+}
+
+body > .overflowingContentWidgets
+  .monaco-hover
+  .monaco-scrollable-element
+  > .scrollbar
+  > .slider:hover,
+.overflowingContentWidgets
+  .monaco-hover
+  .monaco-scrollable-element
+  > .scrollbar
+  > .slider:hover {
+  background: var(
+    --vscode-scrollbarSlider-hoverBackground,
+    var(--scrollbar-thumb-hover)
+  ) !important;
+}
 
 .monaco-editor .find-widget .button {
   width: 22px;

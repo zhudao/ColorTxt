@@ -2,8 +2,10 @@ export type Chapter = {
   title: string;
   lineNumber: number;
   charCount: number;
-  /** 仅 Markdown：1–6，侧栏 padding = (level - 1) * 10px */
+  /** 1 = 顶栏；子级递增。侧栏缩进 = (headingLevel - 1) * 10px */
   headingLevel?: number;
+  /** 嵌入目录写入顺序（侧栏与粘性大纲用，勿按展示行号重排） */
+  tocOrder?: number;
 };
 
 export type ChapterMatchRule = {
@@ -235,6 +237,38 @@ export function filterChaptersByMinCharCount(
   return chapters.filter((ch) => ch.charCount >= floor);
 }
 
+/**
+ * 将各节 direct 字数累加到祖先标题（按 ATX 层级：子级计入父级，兄弟互不影响）。
+ * 调用前 `charCount` 应为该节标题下至下一同级/更高级标题前的 direct 统计。
+ */
+export function rollupCharCountsByHeadingLevel(
+  items: { charCount: number }[],
+  getLevel: (index: number) => number,
+): void {
+  if (items.length === 0) return;
+  const direct = items.map((item) => item.charCount);
+  const stack: number[] = [];
+  for (let i = 0; i < items.length; i++) {
+    const level = getLevel(i);
+    while (stack.length > 0) {
+      if (getLevel(stack[stack.length - 1]!) < level) break;
+      stack.pop();
+    }
+    const count = direct[i]!;
+    for (const ancIdx of stack) {
+      items[ancIdx]!.charCount += count;
+    }
+    stack.push(i);
+  }
+}
+
+export function rollupChapterCharCountsByHeadingLevel(chapters: Chapter[]): void {
+  rollupCharCountsByHeadingLevel(
+    chapters,
+    (i) => chapters[i]!.headingLevel ?? 1,
+  );
+}
+
 /** 编辑态等：对当前 Monaco 全文（通常为物理原文）匹配章节 */
 export function buildChaptersFromPlainText(
   text: string,
@@ -262,8 +296,9 @@ export function applyLeadIndentFullWidth(
 export function physicalOffsetToDisplayOffset(
   physicalLine: string,
   physicalOffset: number,
+  options?: { exemptChapterTitle?: boolean },
 ): number {
-  const displayLine = applyLeadIndentFullWidth(physicalLine);
+  const displayLine = applyLeadIndentFullWidth(physicalLine, options);
   if (displayLine === physicalLine) {
     return Math.max(0, Math.min(Math.floor(physicalOffset), displayLine.length));
   }

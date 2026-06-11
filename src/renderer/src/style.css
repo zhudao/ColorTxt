@@ -546,6 +546,33 @@ textarea:focus {
   margin-top: 1px;
 }
 
+.appShellMenuItem--primary {
+  color: var(--primary);
+}
+
+.appShellMenuItem--primary:hover:not(:disabled) {
+  background: var(--primary-bg);
+  color: var(--primary);
+}
+
+.appShellMenuItem--success {
+  color: var(--success);
+}
+
+.appShellMenuItem--success:hover:not(:disabled) {
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+.appShellMenuItem--warning {
+  color: var(--warning);
+}
+
+.appShellMenuItem--warning:hover:not(:disabled) {
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+
 .appShellMenuItem--danger {
   color: var(--danger);
 }
@@ -555,37 +582,20 @@ textarea:focus {
   color: var(--danger);
 }
 
-.appShellMenuItem--primary {
-  color: var(--primary);
-}
-
-.appShellMenuItem--primary:hover:not(:disabled) {
-  background: var(--primary-bg);
-}
-
-.appShellMenuItem--success {
-  color: var(--success);
-}
-
-.appShellMenuItem.appShellMenuItem--success:hover:not(:disabled) {
-  background: var(--success-bg);
-  color: var(--success);
+.appShellMenuItem--primary .appShellMenuItemPrefix svg path {
+  fill: currentColor;
 }
 
 .appShellMenuItem--success .appShellMenuItemPrefix svg path {
   fill: currentColor;
 }
 
-.appShellMenuItem--danger .appShellMenuItemPrefix svg path {
+.appShellMenuItem--warning .appShellMenuItemPrefix svg path {
   fill: currentColor;
 }
 
-.appShellMenuItem--warning {
-  color: var(--warning);
-}
-
-.appShellMenuItem--warning:hover:not(:disabled) {
-  background: var(--warning-bg);
+.appShellMenuItem--danger .appShellMenuItemPrefix svg path {
+  fill: currentColor;
 }
 
 /** 阅读助手「用户取消」、角色卡检索提示等：与历史 aiUserStoppedBanner 视觉一致 */

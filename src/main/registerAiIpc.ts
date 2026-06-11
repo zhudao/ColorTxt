@@ -11,6 +11,11 @@ import type {
 } from "@shared/aiTypes";
 import type { AiTxt2ImgInvokeResult } from "@shared/aiTxt2ImgIpc";
 import {
+  applyAllActiveProfilesToConfig,
+  readActiveChatEndpoint,
+  readActiveTxt2ImgConfig,
+} from "@shared/aiEndpointProfiles";
+import {
   loadAiConfig,
   mergeAiConfigWithDefaults,
   saveAiConfig,
@@ -105,6 +110,7 @@ let cachedConfig: AIConfig | null = null;
 
 async function cfg(): Promise<AIConfig> {
   if (!cachedConfig) cachedConfig = await loadAiConfig();
+  applyAllActiveProfilesToConfig(cachedConfig);
   return cachedConfig;
 }
 
@@ -289,6 +295,7 @@ export function registerAiIpcHandlers(): void {
 
   ipcMain.handle("ai:config:get", async () => {
     cachedConfig = await loadAiConfig();
+    applyAllActiveProfilesToConfig(cachedConfig);
     openOrRecreateAiVectorDb(cachedConfig.embedding.dimension);
     return cachedConfig;
   });
@@ -634,10 +641,11 @@ export function registerAiIpcHandlers(): void {
       if (!Array.isArray(p.messages))
         return { ok: false, error: "无效 messages" };
 
+      const chat = readActiveChatEndpoint(c);
       void streamChatCompletion({
-        chat: c.chat,
+        chat,
         payload: p,
-        configSystemPromptExtra: c.chat.systemPromptExtra,
+        configSystemPromptExtra: chat.systemPromptExtra,
         webContents: evt.sender,
       });
       return { ok: true };
@@ -671,13 +679,14 @@ export function registerAiIpcHandlers(): void {
       if (typeof p.deepThinking !== "boolean")
         return { ok: false, error: "无效 deepThinking" };
 
+      const chat = readActiveChatEndpoint(c);
       void runAgentChat({
-        chat: c.chat,
+        chat,
         embedding: c.embedding,
         embeddingEnabled: c.embeddingEnabled,
         aiConfig: c,
         payload: p,
-        configSystemPromptExtra: c.chat.systemPromptExtra,
+        configSystemPromptExtra: chat.systemPromptExtra,
         webContents: evt.sender,
         ragTopKDefault: c.ragTopK,
       });
@@ -702,11 +711,18 @@ export function registerAiIpcHandlers(): void {
           models: BUILTIN_EMBEDDING_MODELS.map((m) => m.id),
         };
       }
-      const apiKey = typeof draft.apiKey === "string" ? draft.apiKey : "";
-      const baseUrl = draftOpenAiCompatBaseUrl(draft);
+      const c = await cfg();
+      const activeChat = readActiveChatEndpoint(c);
+      const draftApiKey =
+        typeof draft.apiKey === "string" ? draft.apiKey.trim() : "";
+      const draftBaseUrl = draftOpenAiCompatBaseUrl(draft);
+      const baseUrl =
+        draftBaseUrl ??
+        draftOpenAiCompatBaseUrl({ baseUrl: activeChat.baseUrl });
       if (!baseUrl) {
         return { ok: false, error: "缺少接口地址" };
       }
+      const apiKey = draftApiKey || activeChat.apiKey.trim();
       return fetchOpenAiCompatModelIds({ baseUrl, apiKey });
     },
   );
@@ -720,12 +736,15 @@ export function registerAiIpcHandlers(): void {
         typeof draft.apiBaseUrl === "string" ? draft.apiBaseUrl.trim() : "";
       if (op === "testConnection") {
         const c = await cfg();
+        const activeTxt2img = readActiveTxt2ImgConfig(c);
         const backendRaw =
-          typeof draft.backend === "string" ? draft.backend : c.txt2img.backend;
+          typeof draft.backend === "string"
+            ? draft.backend
+            : activeTxt2img.backend;
         if (!isTxt2ImgBackend(backendRaw)) {
           return { ok: false, error: "无效的文生图 backend" };
         }
-        const txt2img = { ...c.txt2img, backend: backendRaw };
+        const txt2img = { ...activeTxt2img, backend: backendRaw };
         if (typeof draft.apiBaseUrl === "string" && draft.apiBaseUrl.trim()) {
           txt2img.apiBaseUrl = draft.apiBaseUrl.trim();
         }
@@ -1197,13 +1216,14 @@ export function registerAiIpcHandlers(): void {
         if (typeof outputPath !== "string" || !outputPath.trim()) {
           return { ok: false, error: "无效 outputPath" };
         }
+        const txt2img = readActiveTxt2ImgConfig(c);
         const adapted = await adaptPortraitPromptForBackend(c, {
-          backend: c.txt2img.backend,
+          backend: txt2img.backend,
           styleZh,
           appearanceZh,
           negativeZh,
-          defaultPositivePrompt: c.txt2img.defaultPositivePrompt,
-          defaultNegativePrompt: c.txt2img.defaultNegativePrompt,
+          defaultPositivePrompt: txt2img.defaultPositivePrompt,
+          defaultNegativePrompt: txt2img.defaultNegativePrompt,
           signal: ac.signal,
         });
         if (ac.signal.aborted) {
@@ -1217,7 +1237,7 @@ export function registerAiIpcHandlers(): void {
         const negativePrompt =
           adapted.family === "sd" ? adapted.negativePrompt : "";
         return await runTxt2ImgToAbsolutePath({
-          txt2img: c.txt2img,
+          txt2img,
           prompt,
           negativePrompt,
           outputPathAbsolute: outputPath.trim(),

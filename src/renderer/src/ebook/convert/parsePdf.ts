@@ -6,8 +6,31 @@ import {
   OPS,
 } from "pdfjs-dist/legacy/build/pdf.mjs";
 import pdfjsWorker from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
-import type { ColorTxtArtifacts } from "./ebookTypes";
-import { escapeEbookMarkerPayload } from "./ebookInternalLinkMarkers";
+import type { EbookMarkdownArtifacts } from "./ebookTypes";
+import {
+  atxHeadingPrefix,
+  EbookMarkdownFragmentRegistry,
+  formatMdBlockImage,
+  formatSpanAnchor,
+  globalFragmentForLogicalTarget,
+  mdInternalLinkForLogicalTarget,
+  spanAnchorForLogicalTarget,
+} from "./ebookMarkdownEmit";
+import {
+  pushTocAnchorAndHeading,
+  queueTocHeadingMutations,
+} from "./ebookTocAnchorInjection";
+import {
+  dedupeEmbeddedTocEntries,
+  type EmbeddedTocEntry,
+} from "./ebookTocTypes";
+import { chapterTitleForDisplay } from "../../chapter";
+import { plainTextForEbookTitleMatch } from "../ebookTitleMatch";
+import {
+  applyLineMutations,
+  findLineByFragmentInSpineSection,
+  type LineMutation,
+} from "./ebookSpineLineMatch";
 
 let workerConfigured = false;
 
@@ -240,6 +263,294 @@ type DocLinkResolve = {
   getPageIndex: (ref: object) => Promise<number>;
 };
 
+/** pdf.js `getOutline()` 节点（PDF 文档大纲 / 书签） */
+type PdfOutlineNode = {
+  title: string;
+  dest: unknown;
+  items?: PdfOutlineNode[];
+};
+
+type PdfDocWithOutline = DocLinkResolve & {
+  getOutline: () => Promise<PdfOutlineNode[] | null>;
+};
+
+type PdfTocEntry = EmbeddedTocEntry & {
+  /** PDF 书签 dest 纵坐标（与 textContent transform 同系），用于同页多节定位 */
+  destY?: number;
+};
+
+type PdfPagePlain = {
+  plain: string;
+  /** 与 `plain.split("\n")` 等长；每行抽取文本的纵向中心 */
+  lineYs: number[];
+};
+
+function destTopYFromPdfDestArray(d: readonly unknown[]): number | undefined {
+  const xyzIdx = d.findIndex(
+    (x) =>
+      x === "XYZ" ||
+      (typeof x === "object" &&
+        x != null &&
+        "name" in x &&
+        (x as { name?: string }).name === "XYZ"),
+  );
+  if (xyzIdx >= 0 && xyzIdx + 2 < d.length) {
+    const top = d[xyzIdx + 2];
+    if (typeof top === "number" && Number.isFinite(top)) return top;
+  }
+  if (d[1] === "XYZ" && typeof d[3] === "number" && Number.isFinite(d[3])) {
+    return d[3];
+  }
+  return undefined;
+}
+
+async function resolvePdfDest(
+  doc: DocLinkResolve,
+  dest: unknown,
+): Promise<{ page: number; y?: number } | null> {
+  let resolved = dest;
+  if (typeof resolved === "string") {
+    resolved = await doc.getDestination(resolved);
+    if (!resolved) return null;
+  }
+  const page = await pdfDestToOneBasedPage(doc, resolved);
+  if (page == null) return null;
+  const y = Array.isArray(resolved)
+    ? destTopYFromPdfDestArray(resolved)
+    : undefined;
+  return { page, y };
+}
+
+function findPdfLineByDestY(
+  lines: readonly string[],
+  lineCenterY: readonly number[],
+  start: number,
+  end: number,
+  destY: number,
+  title: string,
+  usedLines: ReadonlySet<number>,
+): number | null {
+  const want = chapterTitleForDisplay(title);
+  const maxPlainLen = Math.max(32, (want?.length ?? 0) * 2);
+  let best: number | null = null;
+  let bestDist = Infinity;
+  for (let i = start; i <= end; i++) {
+    if (usedLines.has(i)) continue;
+    const y = lineCenterY[i];
+    if (!Number.isFinite(y)) continue;
+    const plain = chapterTitleForDisplay(
+      plainTextForEbookTitleMatch(lines[i] ?? ""),
+    );
+    if (plain.length > maxPlainLen) continue;
+    const dist = Math.abs(y! - destY);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = i;
+    }
+  }
+  return best;
+}
+
+type PdfTitleLineHit = {
+  lineIdx: number;
+  /** 标题被 PDF 抽成两行时，次行索引（升 ATX 后清空） */
+  joinLineIdx?: number;
+};
+
+/** 页内标题：单行精确 → 相邻两行拼接精确 */
+function findPdfTitleLineMatch(
+  lines: readonly string[],
+  start: number,
+  end: number,
+  title: string,
+  usedLines: ReadonlySet<number>,
+): PdfTitleLineHit | null {
+  const want = chapterTitleForDisplay(title);
+  if (!want) return null;
+
+  for (let i = start; i <= end; i++) {
+    if (usedLines.has(i)) continue;
+    const plain = chapterTitleForDisplay(
+      plainTextForEbookTitleMatch(lines[i] ?? ""),
+    );
+    if (plain === want) return { lineIdx: i };
+  }
+
+  for (let i = start; i < end; i++) {
+    if (usedLines.has(i) || usedLines.has(i + 1)) continue;
+    const p0 = plainTextForEbookTitleMatch(lines[i] ?? "");
+    const p1 = plainTextForEbookTitleMatch(lines[i + 1] ?? "");
+    for (const joined of [
+      chapterTitleForDisplay(p0 + p1),
+      chapterTitleForDisplay(`${p0} ${p1}`),
+    ]) {
+      if (joined === want) return { lineIdx: i, joinLineIdx: i + 1 };
+    }
+  }
+
+  return null;
+}
+
+/** 与 foliate-js `pdf.js` 一致：从 PDF 书签大纲解析目录项，目标为 `pdf-p{页码}` */
+async function collectPdfOutlineEntries(
+  doc: DocLinkResolve,
+  items: readonly PdfOutlineNode[],
+  level: number,
+  out: PdfTocEntry[],
+): Promise<void> {
+  for (const item of items) {
+    const title = item.title?.replace(/\s+/g, " ").trim();
+    if (title && item.dest != null) {
+      const hit = await resolvePdfDest(doc, item.dest);
+      if (hit != null) {
+        out.push({
+          title,
+          targetId: `pdf-p${hit.page}`,
+          level,
+          destY: hit.y,
+        });
+      }
+    }
+    const subs = item.items;
+    if (subs?.length) {
+      await collectPdfOutlineEntries(doc, subs, level + 1, out);
+    }
+  }
+}
+
+/** 各页在 `lines` 中的行号区间（含页锚点行） */
+function buildPdfPageLineRanges(
+  lines: readonly string[],
+  registry: EbookMarkdownFragmentRegistry,
+  numPages: number,
+): Map<number, { start: number; end: number }> {
+  const anchors: { page: number; line: number }[] = [];
+  const lastLine = lines.length - 1;
+  for (let page = 1; page <= numPages; page++) {
+    const frag = registry.resolve(`pdf-p${page}`);
+    if (!frag) continue;
+    const line = findLineByFragmentInSpineSection(lines, 0, lastLine, frag);
+    if (line != null) anchors.push({ page, line });
+  }
+  anchors.sort((a, b) => a.line - b.line);
+  const ranges = new Map<number, { start: number; end: number }>();
+  for (let i = 0; i < anchors.length; i++) {
+    const { page, line } = anchors[i]!;
+    const end =
+      i + 1 < anchors.length ? anchors[i + 1]!.line - 1 : lastLine;
+    ranges.set(page, { start: line, end: Math.max(line, end) });
+  }
+  return ranges;
+}
+
+function pageNumFromPdfTargetId(targetId: string): number | null {
+  const m = /^pdf-p(\d+)$/i.exec(targetId.trim());
+  if (!m) return null;
+  const n = Number.parseInt(m[1]!, 10);
+  return Number.isFinite(n) && n >= 1 ? n : null;
+}
+
+const RE_ATX_HEADING = /^\s{0,3}#{1,6}\s+/;
+
+/**
+ * 在对应页内注入 ATX 章节标题。
+ * 优先页内精确匹配；同页多节用书签 dest Y；无匹配则跳过（勿堆叠假标题）。
+ */
+function injectPdfOutlineIntoLines(
+  lines: string[],
+  tocEntries: readonly PdfTocEntry[],
+  registry: EbookMarkdownFragmentRegistry,
+  numPages: number,
+  lineCenterY: readonly number[],
+): void {
+  if (tocEntries.length === 0 || lines.length === 0) return;
+
+  const pageRanges = buildPdfPageLineRanges(lines, registry, numPages);
+  const mutations: LineMutation[] = [];
+  const usedLines = new Set<number>();
+  let tocCounter = 0;
+
+  for (const entry of tocEntries) {
+    const page = pageNumFromPdfTargetId(entry.targetId);
+    if (page == null) continue;
+    const range = pageRanges.get(page);
+    if (!range) continue;
+
+    const exactHit = findPdfTitleLineMatch(
+      lines,
+      range.start,
+      range.end,
+      entry.title,
+      usedLines,
+    );
+
+    let destYHit: number | null = null;
+    if (exactHit == null && entry.destY != null) {
+      destYHit = findPdfLineByDestY(
+        lines,
+        lineCenterY,
+        range.start,
+        range.end,
+        entry.destY,
+        entry.title,
+        usedLines,
+      );
+    }
+
+    const titleHit = exactHit?.lineIdx ?? destYHit;
+    if (titleHit == null) continue;
+
+    tocCounter += 1;
+    const span = formatSpanAnchor(
+      globalFragmentForLogicalTarget(
+        registry,
+        `${entry.targetId}#toc_${tocCounter}`,
+        `toc_${tocCounter}`,
+      ),
+    );
+
+    const raw = lines[titleHit] ?? "";
+    const headingLine =
+      atxHeadingPrefix(entry.level) + entry.title;
+
+    if (RE_ATX_HEADING.test(raw)) {
+      mutations.push({ kind: "insert", at: titleHit, text: span });
+    } else if (exactHit != null) {
+      queueTocHeadingMutations(mutations, lines, {
+        lineIdx: titleHit,
+        rangeStartLine: range.start,
+        span,
+        title: entry.title,
+        level: entry.level,
+        headingTitleOverride: entry.title,
+      });
+      if (exactHit.joinLineIdx != null) {
+        mutations.push({
+          kind: "insert",
+          at: exactHit.joinLineIdx,
+          text: "",
+          replace: true,
+        });
+        usedLines.add(exactHit.joinLineIdx);
+      }
+    } else {
+      /** dest Y 定位：仅 insert 标题，勿 replace 吞掉正文行 */
+      pushTocAnchorAndHeading(
+        mutations,
+        titleHit,
+        span,
+        headingLine,
+        false,
+      );
+    }
+    usedLines.add(titleHit);
+  }
+
+  if (mutations.length > 0) {
+    applyLineMutations(lines, mutations);
+  }
+}
+
 async function pdfDestToOneBasedPage(doc: DocLinkResolve, dest: unknown): Promise<number | null> {
   if (dest == null) return null;
   if (typeof dest === "string") {
@@ -344,38 +655,30 @@ function lineTextFromCluster(cl: PdfTextPiece[]): string {
     .trim();
 }
 
-function emitLinkedRunAsPlain(
-  run: PdfTextPiece[],
-  meta: { external: boolean; href: string; targetPage: number },
-): string {
-  const clusters = clusterPdfPiecesByStreamLine(run);
-  if (meta.external) {
-    const lineTexts = clusters.map(lineTextFromCluster).filter((t) => t.length > 0);
-    if (lineTexts.length === 0) return "";
-    const body = lineTexts.join("\n");
-    return body.length > 0 ? `${body}（${meta.href}）` : meta.href;
+function pieceCenterY(p: PdfTextPiece): number {
+  return (p.y0 + p.y1) / 2;
+}
+
+function flushPdfLineY(
+  linePieceYs: number[],
+  lineYs: number[],
+): number[] {
+  if (linePieceYs.length === 0) {
+    lineYs.push(Number.NaN);
+  } else {
+    let sum = 0;
+    for (const y of linePieceYs) sum += y;
+    lineYs.push(sum / linePieceYs.length);
   }
-  const tid = `pdf-p${meta.targetPage}`;
-  const parts: string[] = [];
-  for (const cl of clusters) {
-    const lab = lineTextFromCluster(cl);
-    if (!lab) continue;
-    if (isPdfPageNumberLinkLabel(lab)) {
-      parts.push(lab);
-    } else {
-      parts.push(
-        `<<A:${escapeEbookMarkerPayload(lab)}|${escapeEbookMarkerPayload(tid)}>>`,
-      );
-    }
-  }
-  return parts.join("\n");
+  return [];
 }
 
 async function pdfPagePlainWithLinks(
   doc: DocLinkResolve,
   items: unknown[],
   annotations: unknown[],
-): Promise<string> {
+  fragments: EbookMarkdownFragmentRegistry,
+): Promise<PdfPagePlain> {
   const pieces = extractPdfTextPieces(items);
   const resolved: ResolvedPdfLink[] = [];
   for (const a of annotations) {
@@ -434,6 +737,8 @@ async function pdfPagePlainWithLinks(
   });
 
   let raw = "";
+  const lineYs: number[] = [];
+  let linePieceYs: number[] = [];
   let i = 0;
   let lastEmittedPiece: PdfTextPiece | null = null;
   /** 仅「链域 → 链域」且仍同一行时补空格；普通字间不插空格（否则中文会一字一空格）。 */
@@ -454,27 +759,81 @@ async function pdfPagePlainWithLinks(
         ) {
           raw += " ";
         }
-        raw += emitLinkedRunAsPlain(run, meta);
+        const clusters = clusterPdfPiecesByStreamLine(run);
+        const lineTexts: string[] = [];
+        for (const cl of clusters) {
+          const lab = lineTextFromCluster(cl);
+          if (!lab) continue;
+          lineTexts.push(lab);
+        }
+        if (meta.external) {
+          const body = lineTexts.join("\n");
+          raw +=
+            body.length > 0 ? `${body}（${meta.href}）` : meta.href;
+          if (lineTexts.length > 0) {
+            for (const cl of clusters) {
+              const lab = lineTextFromCluster(cl);
+              if (!lab) continue;
+              for (const p of cl) linePieceYs.push(pieceCenterY(p));
+              linePieceYs = flushPdfLineY(linePieceYs, lineYs);
+              if (cl !== clusters[clusters.length - 1]) raw += "\n";
+            }
+          }
+        } else {
+          const tid = `pdf-p${meta.targetPage}`;
+          let firstCluster = true;
+          for (const cl of clusters) {
+            const lab = lineTextFromCluster(cl);
+            if (!lab) continue;
+            if (!firstCluster) {
+              linePieceYs = flushPdfLineY(linePieceYs, lineYs);
+              raw += "\n";
+            }
+            firstCluster = false;
+            for (const p of cl) linePieceYs.push(pieceCenterY(p));
+            if (isPdfPageNumberLinkLabel(lab)) {
+              raw += lab;
+            } else {
+              raw += mdInternalLinkForLogicalTarget(fragments, tid, {
+                label: lab,
+              });
+            }
+          }
+        }
         lastEmittedPiece = run[run.length - 1]!;
         prevChunkWasLinkEmit = true;
+        if (run.length > 0 && run[run.length - 1]!.hasEOL) {
+          linePieceYs = flushPdfLineY(linePieceYs, lineYs);
+          raw += "\n";
+        }
       } else {
         prevChunkWasLinkEmit = false;
         for (const p of run) {
+          if (p.str) linePieceYs.push(pieceCenterY(p));
           raw += p.str;
-          if (p.hasEOL) raw += "\n";
+          if (p.hasEOL) {
+            linePieceYs = flushPdfLineY(linePieceYs, lineYs);
+            raw += "\n";
+          }
           lastEmittedPiece = p;
         }
       }
-      if (run.length > 0 && run[run.length - 1]!.hasEOL) raw += "\n";
       i = j;
     } else {
       prevChunkWasLinkEmit = false;
       const p = pieces[i]!;
+      if (p.str) linePieceYs.push(pieceCenterY(p));
       raw += p.str;
-      if (p.hasEOL) raw += "\n";
+      if (p.hasEOL) {
+        linePieceYs = flushPdfLineY(linePieceYs, lineYs);
+        raw += "\n";
+      }
       lastEmittedPiece = p;
       i++;
     }
+  }
+  if (linePieceYs.length > 0) {
+    flushPdfLineY(linePieceYs, lineYs);
   }
 
   /** 无文字叠合的内部链（如整页透明热区）不生成「跳转第N页」，避免污染正文。 */
@@ -490,7 +849,11 @@ async function pdfPagePlainWithLinks(
     raw = raw.length > 0 ? `${raw.replace(/\n*$/, "")}\n${suffix}\n` : `${suffix}\n`;
   }
 
-  return normalizePdfExtractedPageText(raw);
+  const plain = normalizePdfExtractedPageText(raw);
+  const split = plain.length > 0 ? plain.split("\n") : [];
+  while (lineYs.length < split.length) lineYs.push(Number.NaN);
+  if (lineYs.length > split.length) lineYs.length = split.length;
+  return { plain, lineYs };
 }
 
 type ObjsLike = {
@@ -554,7 +917,7 @@ async function collectPageImages(
     const rel = allocImageRelPath(imagesFolderRel, pageIndex, seq, usedRelKeys);
     seq += 1;
     imageWrites.push({ relativePath: rel, data: png });
-    lines.push(`<<IMG:${escapeEbookMarkerPayload(rel)}>>`);
+    lines.push(formatMdBlockImage(rel));
   };
 
   for (let i = 0; i < fnArray.length; i++) {
@@ -583,7 +946,7 @@ async function collectPageImages(
         objIdToRel.set(objId, rel);
         imageWrites.push({ relativePath: rel, data: png });
       }
-      lines.push(`<<IMG:${escapeEbookMarkerPayload(rel)}>>`);
+      lines.push(formatMdBlockImage(rel));
     }
   }
 }
@@ -591,7 +954,7 @@ async function collectPageImages(
 export async function convertPdfToArtifacts(
   buffer: ArrayBuffer,
   outputBase: string,
-): Promise<ColorTxtArtifacts> {
+): Promise<EbookMarkdownArtifacts> {
   if (!workerConfigured) {
     GlobalWorkerOptions.workerSrc = pdfjsWorker;
     workerConfigured = true;
@@ -611,15 +974,22 @@ export async function convertPdfToArtifacts(
   const objIdToRel = new Map<string, string>();
 
   const docForLinks = doc as unknown as DocLinkResolve;
+  const fragments = new EbookMarkdownFragmentRegistry();
+  const lineCenterY: number[] = [];
 
   for (let i = 1; i <= doc.numPages; i++) {
     const page = (await doc.getPage(i)) as PageLike;
     const tc = await page.getTextContent();
     const anns = await page.getAnnotations();
-    const pagePlain = await pdfPagePlainWithLinks(docForLinks, tc.items, anns);
-    const pageAnchor = `<<ID:${escapeEbookMarkerPayload(`pdf-p${i}`)}>>`;
-    const pageText =
-      pagePlain.length > 0 ? `${pageAnchor}${pagePlain}` : pageAnchor;
+    const { plain: pagePlain, lineYs: pageLineYs } = await pdfPagePlainWithLinks(
+      docForLinks,
+      tc.items,
+      anns,
+      fragments,
+    );
+    const pageAnchor = spanAnchorForLogicalTarget(fragments, `pdf-p${i}`);
+    const pageLines =
+      pagePlain.length > 0 ? pagePlain.split("\n") : [""];
 
     const imgLines: string[] = [];
     await collectPageImages(
@@ -632,20 +1002,52 @@ export async function convertPdfToArtifacts(
       imgLines,
     );
 
-    if (pageText.length > 0) {
-      lines.push(pageText);
+    for (let li = 0; li < pageLines.length; li++) {
+      const chunk = pageLines[li] ?? "";
+      lines.push(li === 0 ? `${pageAnchor}${chunk}` : chunk);
+      lineCenterY.push(pageLineYs[li] ?? Number.NaN);
+    }
+    if (pageLines.length > 0) {
       lines.push("");
+      lineCenterY.push(Number.NaN);
     }
     for (const il of imgLines) {
       lines.push(il);
+      lineCenterY.push(Number.NaN);
       lines.push("");
+      lineCenterY.push(Number.NaN);
+    }
+  }
+
+  const docOutline = doc as unknown as PdfDocWithOutline;
+  if (typeof docOutline.getOutline === "function") {
+    try {
+      const outline = await docOutline.getOutline();
+      if (outline?.length) {
+        const tocEntries: PdfTocEntry[] = [];
+        await collectPdfOutlineEntries(docForLinks, outline, 0, tocEntries);
+        const deduped = dedupeEmbeddedTocEntries(
+          tocEntries,
+        ) as PdfTocEntry[];
+        if (deduped.length > 0) {
+          injectPdfOutlineIntoLines(
+            lines,
+            deduped,
+            fragments,
+            doc.numPages,
+            lineCenterY,
+          );
+        }
+      }
+    } catch {
+      // 无大纲或解析失败时仍输出正文
     }
   }
 
   await doc.destroy();
 
   const utf8 = lines.join("\n").replace(/\n{3,}/g, "\n\n").trim() + "\n";
-  const out: ColorTxtArtifacts = { utf8 };
+  const out: EbookMarkdownArtifacts = { utf8 };
   if (imageWrites.length > 0) out.imageWrites = imageWrites;
   return out;
 }

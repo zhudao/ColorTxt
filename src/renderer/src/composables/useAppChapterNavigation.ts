@@ -11,7 +11,11 @@ import {
   buildChaptersFromMarkdownEditorText,
   buildChaptersFromMarkdownPhysicalLines,
 } from "../markdown/markdownChapter";
-import { buildChaptersFromReaderDisplayText } from "../reader/readerDisplayPipeline";
+import {
+  buildChaptersFromReaderDisplayLines,
+  buildChaptersFromReaderDisplayText,
+} from "../reader/readerDisplayPipeline";
+import { yieldToUi } from "../ebook/yieldToUi";
 import type { ReaderViewportRestoreAnchor } from "../reader/readerViewportAnchor";
 import type { useTxtStreamPipeline } from "./useTxtStreamPipeline";
 
@@ -56,9 +60,22 @@ export function useAppChapterNavigation(deps: {
   ) => Promise<T>;
   onAfterChapterListRefresh?: () => void | Promise<void>;
 }) {
+  function resolveChapterListIndex(ch: Chapter): number {
+    const list = deps.chapters.value;
+    if (ch.tocOrder != null) {
+      const byOrder = list.findIndex((c) => c.tocOrder === ch.tocOrder);
+      if (byOrder >= 0) return byOrder;
+    }
+    const byTitle = list.findIndex(
+      (c) => c.lineNumber === ch.lineNumber && c.title === ch.title,
+    );
+    if (byTitle >= 0) return byTitle;
+    return pickActiveChapterIdx(list, ch.lineNumber);
+  }
+
   function jumpToChapter(ch: Chapter) {
     deps.readerRef.value?.jumpToLine(ch.lineNumber);
-    const idx = pickActiveChapterIdx(deps.chapters.value, ch.lineNumber);
+    const idx = resolveChapterListIndex(ch);
     if (idx !== deps.activeChapterIdx.value) deps.activeChapterIdx.value = idx;
   }
 
@@ -115,13 +132,34 @@ export function useAppChapterNavigation(deps: {
     }
   }
 
+  function applyChapterListResult(filtered: Chapter[]) {
+    deps.chapters.value = filtered;
+    deps.readerRef.value?.setChapters(
+      filtered.map((ch) => ({
+        title: ch.title,
+        lineNumber: ch.lineNumber,
+        headingLevel: ch.headingLevel,
+        tocOrder: ch.tocOrder,
+      })),
+    );
+    deps.activeChapterIdx.value = pickActiveChapterIdx(
+      deps.chapters.value,
+      deps.lastProbeLine.value,
+    );
+  }
+
   /** 对当前 Monaco 展示全文统一匹配章节（加载后 / 规则变更 / 刷新章节） */
   function refreshChapterListFromReader() {
-    const text = deps.readerRef.value?.getAllText?.();
-    if (!text) {
+    void refreshChapterListFromReaderAsync();
+  }
+
+  async function refreshChapterListFromReaderAsync() {
+    const reader = deps.readerRef.value;
+    const lineCount = deps.stream.getLineCount();
+    if (!reader || lineCount <= 0) {
       deps.chapters.value = [];
       deps.activeChapterIdx.value = -1;
-      deps.readerRef.value?.setChapters([]);
+      reader?.setChapters([]);
       return;
     }
 
@@ -130,11 +168,24 @@ export function useAppChapterNavigation(deps: {
     }
 
     const leadingLinkLabels =
-      deps.readerRef.value?.getEbookLeadingLinkLabelsByDisplayLine?.() ??
+      reader.getEbookLeadingLinkLabelsByDisplayLine?.() ??
       new Map<number, readonly string[]>();
 
-    const filtered = deps.currentFileIsMarkdown.value
-      ? deps.readerEditMode.value
+    const heavy =
+      !deps.readerEditMode.value &&
+      lineCount > 50_000 &&
+      !deps.currentFileIsMarkdown.value;
+
+    let filtered: Chapter[];
+    if (deps.currentFileIsMarkdown.value) {
+      const text = reader.getAllText?.() ?? "";
+      if (!text) {
+        deps.chapters.value = [];
+        deps.activeChapterIdx.value = -1;
+        reader.setChapters([]);
+        return;
+      }
+      filtered = deps.readerEditMode.value
         ? buildChaptersFromMarkdownEditorText(text, {
             minCharCount: deps.chapterMinCharCount.value,
           })
@@ -149,24 +200,39 @@ export function useAppChapterNavigation(deps: {
               physicalLineToDisplayLine: (p) =>
                 deps.stream.physicalLineToDisplayForReader(p),
             },
-          )
-      : buildChaptersFromReaderDisplayText(text, {
-          minCharCount: deps.chapterMinCharCount.value,
-          leadingLinkLabelsByDisplayLine: leadingLinkLabels,
-        });
+          );
+    } else if (heavy) {
+      const lines: string[] = new Array(lineCount);
+      const getLine = reader.getEditorLineContent?.bind(reader);
+      for (let i = 1; i <= lineCount; i++) {
+        if (i > 1 && i % 8_000 === 0) {
+          await yieldToUi();
+        }
+        lines[i - 1] = getLine?.(i) ?? "";
+      }
+      filtered = buildChaptersFromReaderDisplayLines(lines, {
+        minCharCount: deps.chapterMinCharCount.value,
+        leadingLinkLabelsByDisplayLine: leadingLinkLabels,
+      });
+    } else {
+      const text = reader.getAllText?.() ?? "";
+      if (!text) {
+        deps.chapters.value = [];
+        deps.activeChapterIdx.value = -1;
+        reader.setChapters([]);
+        return;
+      }
+      filtered = buildChaptersFromReaderDisplayText(text, {
+        minCharCount: deps.chapterMinCharCount.value,
+        leadingLinkLabelsByDisplayLine: leadingLinkLabels,
+      });
+    }
 
-    deps.chapters.value = filtered;
-    deps.readerRef.value?.setChapters(
-      filtered.map((ch) => ({ title: ch.title, lineNumber: ch.lineNumber })),
-    );
-    deps.activeChapterIdx.value = pickActiveChapterIdx(
-      deps.chapters.value,
-      deps.lastProbeLine.value,
-    );
+    applyChapterListResult(filtered);
   }
 
   async function refreshChapterListAfterDisplayChange() {
-    refreshChapterListFromReader();
+    await refreshChapterListFromReaderAsync();
     await deps.onAfterChapterListRefresh?.();
   }
 
@@ -217,6 +283,7 @@ export function useAppChapterNavigation(deps: {
     jumpToNextChapter,
     onProbeLineChange,
     refreshChapterListFromReader,
+    refreshChapterListFromReaderAsync,
     applyChapterMatchRules,
   };
 }

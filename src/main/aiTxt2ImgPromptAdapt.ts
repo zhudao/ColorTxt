@@ -1,3 +1,4 @@
+import { readActiveChatEndpoint } from "@shared/aiEndpointProfiles";
 import type { AIConfig, AITxt2ImgBackend, AITxt2ImgConfig } from "@shared/aiTypes";
 import { getTxt2ImgPromptFamily } from "@shared/txt2ImgBackend";
 import { chatCompletionOnce } from "./aiChat";
@@ -66,15 +67,17 @@ ${appearanceZh || "（空）"}
 
 请输出 JSON。`;
 
+  const chat = readActiveChatEndpoint(cfg);
+
   try {
     const { text: raw } = await chatCompletionOnce({
-      chat: cfg.chat,
+      chat,
       messages: [
         { role: "system", content: system },
         { role: "user", content: user },
       ],
-      maxTokens: Math.min(cfg.chat.maxTokens, 2048),
-      temperature: Math.min(cfg.chat.temperature, 0.4),
+      maxTokens: Math.min(chat.maxTokens, 2048),
+      temperature: Math.min(chat.temperature, 0.4),
       signal: args.signal,
     });
     const stripped = stripJsonFence(raw.trim());

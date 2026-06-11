@@ -29,8 +29,12 @@ import {
   SORTABLE_ROW_HANDLE_CLASS,
   useSortableReorder,
 } from "../composables/useSortableReorder";
+import { MAX_AI_ENDPOINT_PROFILES } from "@shared/aiEndpointProfiles";
+import { useChatProfileDraft } from "../composables/useAiEndpointProfileDraft";
+import AiConfigProfileToolbar from "./AiConfigProfileToolbar.vue";
 
 const modelValue = defineModel<AIConfig>({ required: true });
+const chatProfileDraft = useChatProfileDraft(modelValue);
 const { secretStorageHint } = useSecretStorageHint();
 
 /** 留空时实际使用的绝对路径，用作输入框 placeholder */
@@ -236,6 +240,33 @@ async function runChatConnectionTest(): Promise<ConnectionTestResult> {
   return { ok: false, error: r.error };
 }
 
+const chatProfileToolbarProfiles = computed(
+  () => chatProfileDraft.profileSelectItems.value,
+);
+const chatProfileToolbarEditingId = computed(
+  () => chatProfileDraft.editingId.value,
+);
+const chatProfileToolbarDisplayName = computed(
+  () => chatProfileDraft.editingDisplayName.value,
+);
+const chatProfileToolbarPlaceholder = computed(
+  () => chatProfileDraft.editingProviderLabel.value,
+);
+
+function onChatProfileEditingIdChange(id: string) {
+  chatProfileDraft.selectEditingProfile(id);
+}
+
+function initChatProfiles() {
+  chatProfileDraft.initFromConfig();
+}
+
+defineExpose({
+  finalizeChatProfiles: chatProfileDraft.finalizeBeforeSave,
+  initChatProfiles,
+  resetCurrentChatProfile: chatProfileDraft.resetCurrentProfileChat,
+});
+
 </script>
 
 <template>
@@ -253,6 +284,21 @@ async function runChatConnectionTest(): Promise<ConnectionTestResult> {
       <p class="aiMasterHint">启用后，会在侧栏显示「AI 阅读助手」入口。</p>
     </section>
     <template v-if="modelValue.aiEnabled">
+      <section class="aiSection aiSection--compact">
+        <h3 class="aiSectionTitle">配置方案</h3>
+        <AiConfigProfileToolbar
+          :profiles="chatProfileToolbarProfiles"
+          :editing-id="chatProfileToolbarEditingId"
+          :display-name="chatProfileToolbarDisplayName"
+          :placeholder="chatProfileToolbarPlaceholder"
+          :max-profiles="MAX_AI_ENDPOINT_PROFILES"
+          @update:editing-id="onChatProfileEditingIdChange"
+          @add="chatProfileDraft.addProfile()"
+          @rename="void chatProfileDraft.renameProfile()"
+          @delete="chatProfileDraft.deleteProfile()"
+        />
+      </section>
+
       <section class="aiSection">
         <h3 class="aiSectionTitle">对话模型</h3>
         <div class="settingsRow">

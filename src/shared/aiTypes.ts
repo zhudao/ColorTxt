@@ -332,7 +332,17 @@ export interface AIConfig {
   /** 词云图展示词项数量上限（general / semantic 均适用） */
   wordcloudMaxWords: number;
   txt2img: AITxt2ImgConfig;
+  /** 对话模型配置方案列表 */
+  chatProfiles: import("./aiEndpointProfiles").AiChatProfile[];
+  /** 当前使用的对话模型方案 id */
+  activeChatProfileId: string;
+  /** 文生图配置方案列表 */
+  txt2imgProfiles: import("./aiEndpointProfiles").AiTxt2ImgProfile[];
+  /** 当前使用的文生图方案 id */
+  activeTxt2ImgProfileId: string;
 }
+
+export type { AiChatProfile, AiTxt2ImgProfile } from "./aiEndpointProfiles";
 
 /** mindmap 工具返回（持久化在 tool 消息 content） */
 export interface AIMindmapToolResult {
@@ -825,4 +835,8 @@ export const defaultAIConfig: AIConfig = {
   autoMindmapOnSummaryAndCharacters: true,
   wordcloudMaxWords: DEFAULT_WORDCLOUD_MAX_WORDS,
   txt2img: structuredClone(defaultTxt2ImgConfig),
+  chatProfiles: [],
+  activeChatProfileId: "",
+  txt2imgProfiles: [],
+  activeTxt2ImgProfileId: "",
 };

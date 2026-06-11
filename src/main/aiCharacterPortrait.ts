@@ -19,6 +19,7 @@ import {
   type AITokenUsageTotals,
   ZERO_TOKEN_USAGE,
 } from "@shared/aiTokenUsage";
+import { readActiveChatEndpoint } from "@shared/aiEndpointProfiles";
 
 /** 与「文生图接口」报错区分，便于侧栏立绘生成排障 */
 const PORTRAIT_TRANSLATE_ERR_PREFIX = "提示词译英（对话模型）";
@@ -448,12 +449,14 @@ ${negativeZh || "（空）"}
     { role: "user" as const, content: user },
   ];
 
+  const chat = readActiveChatEndpoint(cfg);
+
   try {
     const { text: raw } = await chatCompletionOnce({
-      chat: cfg.chat,
+      chat,
       messages,
-      maxTokens: Math.min(cfg.chat.maxTokens, 2048),
-      temperature: Math.min(cfg.chat.temperature, 0.35),
+      maxTokens: Math.min(chat.maxTokens, 2048),
+      temperature: Math.min(chat.temperature, 0.35),
       signal: args.signal,
     });
     const stripped = stripJsonFence(raw.trim());
@@ -462,7 +465,7 @@ ${negativeZh || "（空）"}
       parsed = JSON.parse(stripped) as unknown;
     } catch {
       const { text: raw2 } = await chatCompletionOnce({
-        chat: cfg.chat,
+        chat,
         messages: [
           { role: "system", content: system },
           {
@@ -470,7 +473,7 @@ ${negativeZh || "（空）"}
             content: `下列应为 JSON 但解析失败，请只输出修正后的合法 JSON（不要其它文字）：\n\n${stripped.slice(0, 8000)}`,
           },
         ],
-        maxTokens: Math.min(cfg.chat.maxTokens, 2048),
+        maxTokens: Math.min(chat.maxTokens, 2048),
         temperature: 0.15,
         signal: args.signal,
       });
@@ -647,7 +650,7 @@ export async function runBookStyleInference(
 
   try {
     return await callBookStyleLlm({
-      chat: cfg.chat,
+      chat: readActiveChatEndpoint(cfg),
       retrievalContext,
       fileTitle: args.fileTitle,
       signal: args.signal,
@@ -709,7 +712,7 @@ export async function runCharacterPortraitExtract(
 
   try {
     return await callPortraitLlm({
-      chat: cfg.chat,
+      chat: readActiveChatEndpoint(cfg),
       characterName: name,
       retrievalContext,
       hits,

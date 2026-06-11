@@ -27,11 +27,11 @@ export type FileMetaRecord = {
   path: string;
   fileName: string;
   /**
-   * 电子书原文件路径为 `path` 时，实际阅读的转换结果 txt 绝对路径（如 `…/abc.epub.txt`）。
-   * 纯 txt 打开时通常不设置。
+   * 电子书原文件路径为 `path` 时，实际阅读的转换结果 md 绝对路径（如 `…/abc.epub.md`）。
+   * 纯 txt / 用户自写 md 打开时通常不设置。
    */
-  convertedTxtPath?: string;
-  /** 写入 `convertedTxtPath` 时源电子书 `mtimeMs`，用于缓存失效 */
+  convertedMdPath?: string;
+  /** 写入 `convertedMdPath` 时源电子书 `mtimeMs`，用于缓存失效 */
   sourceMtimeMsAtConvert?: number;
   progress?: number;
   /** 阅读器滚动/光标视图状态；与 `progress` 同为单文件阅读恢复依据 */
@@ -268,9 +268,9 @@ function normalizeRecord(item: Partial<FileMetaRecord>): FileMetaRecord | null {
   const highlightWordsByIndex = normalizeHighlightWordsByIndex(
     item.highlightWordsByIndex,
   );
-  const convertedTxtPath =
-    typeof item.convertedTxtPath === "string" && item.convertedTxtPath.trim()
-      ? item.convertedTxtPath.trim()
+  const convertedMdPath =
+    typeof item.convertedMdPath === "string" && item.convertedMdPath.trim()
+      ? item.convertedMdPath.trim()
       : undefined;
   const sourceMtimeMsAtConvert =
     typeof item.sourceMtimeMsAtConvert === "number" &&
@@ -290,7 +290,7 @@ function normalizeRecord(item: Partial<FileMetaRecord>): FileMetaRecord | null {
   return {
     path,
     fileName,
-    convertedTxtPath,
+    convertedMdPath,
     sourceMtimeMsAtConvert,
     progress,
     editorViewState,
@@ -388,7 +388,7 @@ export function upsertFileMetaRecord(
     viewportTopPhysicalLine: prev?.viewportTopPhysicalLine,
     bookmarks: prev?.bookmarks ?? [],
     highlightWordsByIndex: prev?.highlightWordsByIndex,
-    convertedTxtPath: prev?.convertedTxtPath,
+    convertedMdPath: prev?.convertedMdPath,
     sourceMtimeMsAtConvert: prev?.sourceMtimeMsAtConvert,
     lastOpenedAt: prev?.lastOpenedAt,
     characterBookStyle: prev?.characterBookStyle,

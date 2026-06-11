@@ -89,6 +89,8 @@ const props = withDefaults(
     activeBookmarkLine?: number | null;
     showChapterCounts: boolean;
     formatCharCount: (n: number) => string;
+    /** 与设置「章节最少字数」一致 */
+    chapterMinCharCount?: number;
     /** edge：滚入可见区；center：当前项在列表视口垂直居中（全屏浮动侧栏） */
     activeScrollMode?: "edge" | "center";
     /** 全屏浮动侧栏时章节列表不使用平滑滚动（避免与呼出动画叠加） */
@@ -269,7 +271,7 @@ const {
   chaptersVisible,
   bookmarkListRef,
   bookmarksVisible,
-  sidebarActiveLineNumber,
+  isChapterActive,
   onChapterItemClick,
   scrollFileListToIndex,
   resetChapterListScroll,
@@ -757,7 +759,7 @@ defineExpose({
         v-show="activeTab === 'chapters'"
         :current-file-path="currentFilePath"
         :chapters-visible="chaptersVisible"
-        :sidebar-active-line-number="sidebarActiveLineNumber"
+        :is-chapter-active="isChapterActive"
         :show-chapter-counts="showChapterCounts"
         :format-char-count="formatCharCount"
         @jump-to-chapter="onChapterItemClick"

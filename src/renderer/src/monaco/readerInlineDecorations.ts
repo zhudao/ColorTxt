@@ -1,4 +1,6 @@
 import type * as monaco from "monaco-editor";
+import { chapterTitleForDisplay } from "../chapter";
+import { plainTextForEbookTitleMatch } from "../ebook/ebookTitleMatch";
 import type { ReaderSurfacePalette } from "../constants/readerPalette";
 import {
   CHAPTER_TITLE_LINE_CLASS,
@@ -210,6 +212,24 @@ export function setReaderSyntaxHighlightEnabled(
   });
 }
 
+/** 章节标题样式仅覆盖标题文案，勿盖住同行尾部的 MD 内链图标占位 */
+function chapterTitleStyleEndColumn(
+  model: monaco.editor.ITextModel,
+  lineNumber: number,
+  title: string,
+): number {
+  const want = chapterTitleForDisplay(title);
+  if (!want) return model.getLineMaxColumn(lineNumber);
+  const lineText = model.getLineContent(lineNumber);
+  const plain = chapterTitleForDisplay(plainTextForEbookTitleMatch(lineText));
+  if (plain === want || plain.startsWith(want)) {
+    if (lineText.startsWith(want)) {
+      return 1 + want.length;
+    }
+  }
+  return Math.min(model.getLineMaxColumn(lineNumber), 1 + want.length);
+}
+
 /**
  * 构建章节标题的 Monaco 模型装饰（仅 `inlineClassName` 着色）。
  * 标题前后留白由 {@link formatPhysicalLinesForReader} 在开启「压缩空行」时插入空行实现。
@@ -219,17 +239,20 @@ export function buildChapterTitleDecorations(
   model: monaco.editor.ITextModel,
   chapters: ChapterStickyLine[],
 ): monaco.editor.IModelDeltaDecoration[] {
-  const sorted = chapters.slice().sort((a, b) => a.lineNumber - b.lineNumber);
   const maxLine = model.getLineCount();
-  return sorted
-    .map((ch) => ch.lineNumber)
-    .filter((lineNumber) => lineNumber >= 1 && lineNumber <= maxLine)
-    .map((lineNumber) => ({
+  return chapters
+    .filter(
+      (ch) =>
+        ch.title.trim().length > 0 &&
+        ch.lineNumber >= 1 &&
+        ch.lineNumber <= maxLine,
+    )
+    .map((ch) => ({
       range: new monacoApi.Range(
-        lineNumber,
+        ch.lineNumber,
         1,
-        lineNumber,
-        model.getLineMaxColumn(lineNumber),
+        ch.lineNumber,
+        chapterTitleStyleEndColumn(model, ch.lineNumber, ch.title),
       ),
       options: {
         inlineClassName: CHAPTER_TITLE_LINE_CLASS,

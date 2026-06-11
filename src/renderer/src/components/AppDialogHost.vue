@@ -67,7 +67,9 @@ function onPromptKeydown(e: KeyboardEvent) {
     :body-scroll="true"
   >
     <div class="appDialogBody">
-      <p class="appDialogMsg">{{ appDialogModel.message }}</p>
+      <p v-if="appDialogModel.message.trim()" class="appDialogMsg">
+        {{ appDialogModel.message }}
+      </p>
       <input
         v-if="appDialogModel.kind === 'prompt'"
         ref="promptInputRef"

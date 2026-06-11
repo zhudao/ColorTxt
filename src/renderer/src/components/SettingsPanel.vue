@@ -3,7 +3,6 @@ import { computed, nextTick, ref, toRaw, useTemplateRef, watch } from "vue";
 import type { AIConfig } from "@shared/aiTypes";
 import {
   defaultAIConfig,
-  EMPTY_TOKEN_PRICE_PER_MILLION,
   normalizeTokenPricePerMillion,
 } from "@shared/aiTypes";
 import type { AiCustomSkill, AiSkillUserOverride } from "@shared/aiSkills";
@@ -46,8 +45,6 @@ import { appAlert } from "../services/appDialog";
 import { getBuiltinEmbeddingBlockMessage } from "../ai/embeddingReady";
 import { icons } from "../icons";
 import {
-  resolveDefaultCharacterPortraitCacheDirSync,
-  resolveDefaultAiDataCacheDirSync,
   resolveDefaultBuiltinModelCacheDirSync,
   resolveDefaultEbookConvertOutputDirSync,
   resolveEffectiveAiDataCacheDir,
@@ -59,6 +56,19 @@ import {
   mergeVoiceReadSettings,
   voiceReadDashScopeRequiresApiKey,
 } from "../constants/voiceRead";
+import { applyAllActiveProfilesToConfig } from "@shared/aiEndpointProfiles";
+
+type SettingsAIPanelExpose = {
+  finalizeChatProfiles?: () => void;
+  initChatProfiles?: () => void;
+  resetCurrentChatProfile?: () => void;
+};
+
+type SettingsTxt2ImgPanelExpose = {
+  finalizeTxt2ImgProfiles?: () => void;
+  initTxt2ImgProfiles?: () => void;
+  resetCurrentTxt2ImgProfile?: () => void;
+};
 
 export type SettingsApplyPayload = {
   restoreSessionOnStartup: boolean;
@@ -119,6 +129,9 @@ const settingsTabScrollerEl = useTemplateRef<HTMLElement>(
 type SettingsSkillsPanelExpose = { openCreateSkill: () => void };
 const skillsPanelRef =
   useTemplateRef<SettingsSkillsPanelExpose>("skillsPanelRef");
+const aiPanelRef = useTemplateRef<SettingsAIPanelExpose>("aiPanelRef");
+const txt2imgPanelRef =
+  useTemplateRef<SettingsTxt2ImgPanelExpose>("txt2imgPanelRef");
 
 function onAddSkillClick() {
   skillsPanelRef.value?.openCreateSkill();
@@ -209,6 +222,9 @@ async function syncAiFromMain() {
     loadedBuiltinModelCacheDir.value =
       await resolveEffectiveBuiltinModelCacheDir("");
   }
+  await nextTick();
+  aiPanelRef.value?.initChatProfiles?.();
+  txt2imgPanelRef.value?.initTxt2ImgProfiles?.();
 }
 
 watch(modelValue, (open) => {
@@ -275,19 +291,7 @@ function resetEditDraft() {
 }
 
 function resetAiDraft() {
-  const def = defaultAIConfig;
-  const chat = structuredClone(def.chat);
-  chat.tokenPricePerMillion = { ...EMPTY_TOKEN_PRICE_PER_MILLION };
-  draftAi.value = {
-    ...draftAi.value,
-    aiEnabled: def.aiEnabled,
-    aiDataCacheDir: resolveDefaultAiDataCacheDirSync(),
-    chat,
-    quickQuestions: structuredClone(def.quickQuestions),
-    showTokenUsage: def.showTokenUsage,
-    autoMindmapOnSummaryAndCharacters: def.autoMindmapOnSummaryAndCharacters,
-    wordcloudMaxWords: def.wordcloudMaxWords,
-  };
+  aiPanelRef.value?.resetCurrentChatProfile?.();
 }
 
 function resetVectorModelDraft() {
@@ -304,12 +308,7 @@ function resetVectorModelDraft() {
 }
 
 function resetTxt2ImgDraft() {
-  draftAi.value = {
-    ...draftAi.value,
-    txt2img: structuredClone(defaultAIConfig.txt2img),
-  };
-  draftCharacterPortraitCacheDir.value =
-    resolveDefaultCharacterPortraitCacheDirSync();
+  txt2imgPanelRef.value?.resetCurrentTxt2ImgProfile?.();
 }
 
 function resetSkillsDraft() {
@@ -429,6 +428,10 @@ async function onConfirm() {
     await appAlert("「语音朗读」阿里云通义（DashScope）需要 API 密钥");
     return;
   }
+
+  aiPanelRef.value?.finalizeChatProfiles?.();
+  txt2imgPanelRef.value?.finalizeTxt2ImgProfiles?.();
+  applyAllActiveProfilesToConfig(draftAi.value);
 
   const aiPayload = JSON.parse(
     JSON.stringify(toRaw(draftAi.value)),
@@ -566,7 +569,11 @@ async function onClearCache() {
               v-model="draftVoiceRead"
             />
 
-            <SettingsAIPanel v-show="activeTab === 'ai'" v-model="draftAi" />
+            <SettingsAIPanel
+              ref="aiPanelRef"
+              v-show="activeTab === 'ai'"
+              v-model="draftAi"
+            />
 
             <SettingsVectorModelPanel
               v-show="activeTab === 'vectorModel'"
@@ -574,6 +581,7 @@ async function onClearCache() {
             />
 
             <SettingsTxt2ImgPanel
+              ref="txt2imgPanelRef"
               v-show="activeTab === 'txt2img'"
               v-model="draftAi"
               v-model:character-portrait-cache-dir="

@@ -1,5 +1,6 @@
 import { computed, nextTick, ref, shallowRef, watch } from "vue";
 import type { Chapter } from "../chapter";
+import { defaultChapterMinCharCount } from "../constants/appUi";
 import type VirtualList from "../components/VirtualList.vue";
 import type { FileSortMode } from "../constants/fileCategories";
 import {
@@ -70,6 +71,8 @@ export type ReaderSidebarListProps = Readonly<{
   fileSort?: FileSortMode;
   /** 当前打开文件的实时进度（%）；仅「按阅读进度」排序时参与 `filesSorted`（勿用于打开时间排序，以免滚动时整表重算） */
   liveReadingProgressPercent?: number;
+  /** 与设置「章节最少字数」一致；0 表示保留无正文字数的目录项（如书名页） */
+  chapterMinCharCount?: number;
 }>;
 
 function effectiveCategoryName(f: SidebarFileItem): string {
@@ -322,8 +325,27 @@ export function useReaderSidebarLists(
     return base.filter((f) => f.name.toLowerCase().includes(q));
   });
 
+  const chapterMinCharFloor = computed(() =>
+    Math.max(
+      0,
+      Math.floor(props.chapterMinCharCount ?? defaultChapterMinCharCount),
+    ),
+  );
+
+  function chapterMeetsMinCharCount(ch: Chapter): boolean {
+    const floor = chapterMinCharFloor.value;
+    return floor <= 0 || ch.charCount >= floor;
+  }
+
   const chaptersVisible = computed(() =>
-    props.chapters.filter((ch) => ch.charCount > 0),
+    props.chapters
+      .filter((ch) => chapterMeetsMinCharCount(ch))
+      .slice()
+      .sort(
+        (a, b) =>
+          (a.tocOrder ?? a.lineNumber) - (b.tocOrder ?? b.lineNumber) ||
+          a.lineNumber - b.lineNumber,
+      ),
   );
   const bookmarksVisible = computed<SidebarBookmarkItem[]>(() =>
     props.bookmarks.slice().sort((a, b) => a.line - b.line),
@@ -334,10 +356,41 @@ export function useReaderSidebarLists(
     const idx = props.activeChapterIdx;
     if (idx < 0 || idx >= list.length) return -1;
     let i = idx;
-    while (i >= 0 && list[i].charCount === 0) i--;
+    while (i >= 0 && !chapterMeetsMinCharCount(list[i]!)) i--;
     if (i < 0) return -1;
     return list[i].lineNumber;
   });
+
+  const activeChapterKey = computed(() => {
+    const list = props.chapters;
+    const idx = props.activeChapterIdx;
+    if (idx < 0 || idx >= list.length) return "";
+    let i = idx;
+    while (i >= 0 && !chapterMeetsMinCharCount(list[i]!)) i--;
+    if (i < 0) return "";
+    const ch = list[i]!;
+    return ch.tocOrder != null
+      ? `o:${ch.tocOrder}`
+      : `l:${ch.lineNumber}:${ch.title}`;
+  });
+
+  function isChapterActive(ch: Chapter): boolean {
+    const list = props.chapters;
+    const idx = props.activeChapterIdx;
+    if (idx < 0 || idx >= list.length) return false;
+    let i = idx;
+    while (i >= 0 && !chapterMeetsMinCharCount(list[i]!)) i--;
+    if (i < 0) return false;
+    const active = list[i]!;
+    if (
+      active.tocOrder != null &&
+      ch.tocOrder != null &&
+      active.tocOrder === ch.tocOrder
+    ) {
+      return true;
+    }
+    return active.lineNumber === ch.lineNumber && active.title === ch.title;
+  }
 
   let suppressAutoScrollUntil = 0;
 
@@ -365,15 +418,26 @@ export function useReaderSidebarLists(
   function resolveActiveChapterVisibleIndex(): number {
     const visible = chaptersVisible.value;
     if (visible.length === 0) return -1;
+    const full = props.chapters;
+    const ai = props.activeChapterIdx;
+    if (ai >= 0 && ai < full.length) {
+      let i = ai;
+      while (i >= 0 && !chapterMeetsMinCharCount(full[i]!)) i--;
+      if (i >= 0) {
+        const ch = full[i]!;
+        if (ch.tocOrder != null) {
+          const byOrder = visible.findIndex((v) => v.tocOrder === ch.tocOrder);
+          if (byOrder >= 0) return byOrder;
+        }
+        const byTitle = visible.findIndex(
+          (v) => v.lineNumber === ch.lineNumber && v.title === ch.title,
+        );
+        if (byTitle >= 0) return byTitle;
+      }
+    }
     const line = sidebarActiveLineNumber.value;
     if (line >= 0) {
-      const byLine = visible.findIndex((ch) => ch.lineNumber === line);
-      if (byLine >= 0) return byLine;
-    }
-    const ai = props.activeChapterIdx;
-    const full = props.chapters;
-    if (ai >= 0 && ai < full.length) {
-      return visible.findIndex((ch) => ch.lineNumber === full[ai]!.lineNumber);
+      return visible.findIndex((ch) => ch.lineNumber === line);
     }
     return -1;
   }
@@ -538,18 +602,14 @@ export function useReaderSidebarLists(
   );
 
   watch(
-    () =>
-      [props.activeChapterIdx, sidebarActiveLineNumber.value] as [
-        number,
-        number,
-      ],
+    () => [props.activeChapterIdx, activeChapterKey.value] as [number, string],
     (curr, prev) => {
       if (props.suppressChapterListAutoScroll) return;
-      const [idx, line] = curr;
-      if (idx < 0 || line < 0) return;
+      const [idx, key] = curr;
+      if (idx < 0 || !key) return;
       if (prev) {
-        const [pIdx, pLine] = prev;
-        if (pIdx === idx && pLine === line) return;
+        const [pIdx, pKey] = prev;
+        if (pIdx === idx && pKey === key) return;
       }
       const smooth = props.chapterListScrollSmooth;
       // 阅读器滚动换章时：章节列表可能不处于显示状态，但仍应居中当前章。
@@ -659,6 +719,7 @@ export function useReaderSidebarLists(
     chaptersVisible,
     bookmarksVisible,
     sidebarActiveLineNumber,
+    isChapterActive,
     onChapterItemClick,
     ensureActiveBookmarkVisible,
     ensureCurrentFileVisible,

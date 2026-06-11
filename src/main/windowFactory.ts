@@ -10,6 +10,7 @@ import {
   WINDOW_MIN_WIDTH,
 } from "./windowBounds";
 import { attachWindowCloseRequestGuard } from "./windowCloseGuard";
+import { attachWebContentsExternalLinkPolicy } from "./webContentsExternalLinks";
 
 export type CreateMainWindow = (options?: {
   openTxtPath?: string | null;
@@ -50,6 +51,7 @@ export function createMainWindowFactory(maps: MainWindowMaps): CreateMainWindow 
     });
     win.setMenuBarVisibility(false);
     win.removeMenu();
+    attachWebContentsExternalLinkPolicy(win.webContents);
     shouldRestoreSessionByWindowId.set(win.id, shouldRestoreSession);
     win.on("closed", () => {
       shouldRestoreSessionByWindowId.delete(win.id);

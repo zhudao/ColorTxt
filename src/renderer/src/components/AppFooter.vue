@@ -24,6 +24,7 @@ const props = withDefaults(
     /** 底栏路径菜单：「在文件管理器中显示」是否可用 */
     pathMenuRevealEnabled: boolean;
     pathMenuReloadEnabled: boolean;
+    pathMenuReconvertEnabled: boolean;
     pathMenuCloseEnabled: boolean;
   }>(),
   {
@@ -32,6 +33,7 @@ const props = withDefaults(
     encodingActionsEnabled: false,
     pathMenuRevealEnabled: true,
     pathMenuReloadEnabled: false,
+    pathMenuReconvertEnabled: false,
     pathMenuCloseEnabled: false,
   },
 );
@@ -39,6 +41,7 @@ const props = withDefaults(
 const emit = defineEmits<{
   pathRevealInFolder: [];
   pathReload: [];
+  pathReconvert: [];
   pathClose: [];
   saveFileAsEncoding: [encoding: "utf8" | "gb2312"];
 }>();
@@ -59,24 +62,39 @@ const encodingMenuItems = [
   { id: "gb2312", label: "保存为 GB2312" },
 ] as const;
 
-const pathMenuItems = computed(() => [
-  {
-    id: "reveal",
-    label: "在文件管理器中显示",
-    disabled: !props.pathMenuRevealEnabled,
-  },
-  {
-    id: "reload",
-    label: "重新加载",
-    disabled: !props.pathMenuReloadEnabled,
-  },
-  {
+const pathMenuItems = computed(() => {
+  const items: {
+    id: string;
+    label: string;
+    type?: "warning" | "danger";
+    disabled?: boolean;
+  }[] = [
+    {
+      id: "reveal",
+      label: "在文件管理器中显示",
+      disabled: !props.pathMenuRevealEnabled,
+    },
+    {
+      id: "reload",
+      label: "重新加载",
+      disabled: !props.pathMenuReloadEnabled,
+    },
+  ];
+  if (props.pathMenuReconvertEnabled) {
+    items.push({
+      id: "reconvert",
+      label: "重新转换",
+      type: "warning",
+    });
+  }
+  items.push({
     id: "close",
     label: "关闭文件",
-    type: "danger" as const,
+    type: "danger",
     disabled: !props.pathMenuCloseEnabled,
-  },
-]);
+  });
+  return items;
+});
 
 function closePathMenu() {
   pathMenuOpen.value = false;
@@ -133,6 +151,7 @@ function onPathMenuSelect(id: string) {
   closePathMenu();
   if (id === "reveal") emit("pathRevealInFolder");
   else if (id === "reload") emit("pathReload");
+  else if (id === "reconvert") emit("pathReconvert");
   else if (id === "close") emit("pathClose");
 }
 </script>

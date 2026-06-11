@@ -1,7 +1,7 @@
-import type { ColorTxtArtifacts } from "./ebookTypes";
-import { escapeEbookMarkerPayload } from "./ebookInternalLinkMarkers";
+import type { EbookMarkdownArtifacts } from "./ebookTypes";
+import { formatMdBlockImage } from "./ebookMarkdownEmit";
 import { ChmArchive } from "./chm/chmArchive";
-import { yieldToUi } from "./yieldToUi";
+import { yieldToUi } from "../yieldToUi";
 
 function extFromPath(p: string): string {
   const lower = p.toLowerCase();
@@ -176,7 +176,7 @@ function walkChmHtmlNode(
             const copy = new Uint8Array(data.length);
             copy.set(data);
             ctx.imageWrites.push({ relativePath: rel, data: copy.buffer });
-            out.push(`<<IMG:${escapeEbookMarkerPayload(rel)}>>`);
+            out.push(formatMdBlockImage(rel));
           } catch {
             /* skip */
           }
@@ -235,7 +235,7 @@ function htmlTopicToLines(
 export async function convertChmToArtifacts(
   buffer: ArrayBuffer,
   outputBase: string,
-): Promise<ColorTxtArtifacts> {
+): Promise<EbookMarkdownArtifacts> {
   const chm = new ChmArchive(buffer);
   const topics = chm.files
     .filter((f) => {

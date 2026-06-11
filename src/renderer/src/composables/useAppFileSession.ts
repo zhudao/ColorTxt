@@ -14,7 +14,7 @@ import { loadSessionSnapshot } from "../stores/cacheStore";
 import { useAppPersistence } from "./useAppPersistence";
 import { normalizeFileMetaPathKey } from "../stores/fileMetaStore";
 import { isEbookFilePath, isSupportedBookPath } from "../ebook/ebookFormat";
-import { ensureEbookColorTxt } from "../ebook/convertEbookToColorTxt";
+import { ensureEbookMarkdown } from "../ebook/convert/convertEbookToMarkdown";
 import { yieldToUi } from "../ebook/yieldToUi";
 import { useAppChapterListSync } from "./useAppChapterListSync";
 import { useTxtStreamPipeline } from "./useTxtStreamPipeline";
@@ -158,7 +158,10 @@ export function useAppFileSession(deps: {
     }
   }
 
-  async function resolvePhysicalTextForOpen(filePath: string): Promise<
+  async function resolvePhysicalTextForOpen(
+    filePath: string,
+    options?: { forceEbookConvert?: boolean },
+  ): Promise<
     | {
         ok: true;
         physicalPath: string;
@@ -193,12 +196,13 @@ export function useAppFileSession(deps: {
         return { ok: false, message: `文件不存在或不可访问：${filePath}` };
       }
       const meta = getFileMeta(filePath);
-      const { colorTxtPath, didConvert } = await ensureEbookColorTxt({
+      const { convertedMdPath, didConvert } = await ensureEbookMarkdown({
         sourceBookPath: filePath,
         ebookConvertOutputDir: deps.ebookConvertOutputDir.value,
         sourceMtimeMs: st.mtimeMs,
-        existingConvertedPath: meta?.convertedTxtPath,
+        existingConvertedPath: meta?.convertedMdPath,
         existingSourceMtimeMs: meta?.sourceMtimeMsAtConvert,
+        forceConvert: options?.forceEbookConvert,
         onActualConversionStart: async () => {
           deps.ebookConversionSourcePath.value = filePath;
           deps.ebookParsing.value = true;
@@ -206,28 +210,28 @@ export function useAppFileSession(deps: {
           await yieldToUi();
         },
       });
-      const recordedTxt = meta?.convertedTxtPath?.trim();
+      const recordedMd = meta?.convertedMdPath?.trim();
       const pathMatch =
-        Boolean(recordedTxt) &&
-        normalizeFileMetaPathKey(recordedTxt!) ===
-          normalizeFileMetaPathKey(colorTxtPath);
+        Boolean(recordedMd) &&
+        normalizeFileMetaPathKey(recordedMd!) ===
+          normalizeFileMetaPathKey(convertedMdPath);
       const mtimeMatch =
         typeof meta?.sourceMtimeMsAtConvert === "number" &&
         meta.sourceMtimeMsAtConvert === st.mtimeMs;
       if (didConvert || !pathMatch || !mtimeMatch) {
-        setEbookConvertedMeta(filePath, colorTxtPath, st.mtimeMs);
+        setEbookConvertedMeta(filePath, convertedMdPath, st.mtimeMs);
         persistFileMeta();
       }
-      const tst = await window.colorTxt.stat(colorTxtPath);
+      const tst = await window.colorTxt.stat(convertedMdPath);
       if (!tst.isFile) {
         return {
           ok: false,
-          message: `转换结果未生成或路径不可读：${colorTxtPath}`,
+          message: `转换结果未生成或路径不可读：${convertedMdPath}`,
         };
       }
       return {
         ok: true,
-        physicalPath: colorTxtPath,
+        physicalPath: convertedMdPath,
         sessionFilePath: filePath,
         displaySize: tst.size,
         listSizeAtSessionPath: st.size,
@@ -634,6 +638,8 @@ export function useAppFileSession(deps: {
       skipReaderEditGuard?: boolean;
       /** 流结束后按视口第二行高锚点恢复（优先于 restorePhysicalLine） */
       restoreViewportAnchor?: import("../reader/readerViewportAnchor").ReaderViewportRestoreAnchor;
+      /** 电子书：忽略缓存，强制重新转换后再打开 */
+      forceEbookConvert?: boolean;
     },
   ) {
     if (!options?.keepSidebarTab) {
@@ -670,7 +676,9 @@ export function useAppFileSession(deps: {
       return false;
     }
 
-    const resolved = await resolvePhysicalTextForOpen(filePath);
+    const resolved = await resolvePhysicalTextForOpen(filePath, {
+      forceEbookConvert: options?.forceEbookConvert,
+    });
     if (!resolved.ok) {
       await appAlert(resolved.message);
       removeRecentFile(filePath);

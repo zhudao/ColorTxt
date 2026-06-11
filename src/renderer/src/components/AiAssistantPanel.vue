@@ -12,13 +12,14 @@ import {
 import type ReaderMain from "./ReaderMain.vue";
 import type { Chapter } from "../chapter";
 import { pickActiveChapterIdx } from "../reader/chapterIndex";
-import type { AIAgentRendererEvent } from "@shared/aiTypes";
+import type { AIAgentRendererEvent, AIConfig } from "@shared/aiTypes";
 import {
   EMPTY_TOKEN_PRICE_PER_MILLION,
   normalizeAiQuickQuestions,
   normalizeTokenPricePerMillion,
   type AITokenPricePerMillion,
 } from "@shared/aiTypes";
+import { readActiveChatEndpoint } from "@shared/aiEndpointProfiles";
 import type { AiCustomSkill, AiSkillUserOverride } from "@shared/aiSkills";
 import { collectEnabledAgentSkills } from "@shared/aiSkills";
 import {
@@ -531,15 +532,12 @@ async function syncChatModelFromConfig() {
   }
 }
 
-function chatEndpointFingerprint(cfg: {
-  chat: { baseUrl: string; apiKey: string };
-}): string {
-  return `${cfg.chat.baseUrl.trim()}\0${cfg.chat.apiKey}`;
+function chatEndpointFingerprint(cfg: AIConfig): string {
+  const chat = readActiveChatEndpoint(cfg);
+  return `${chat.baseUrl.trim()}\0${chat.apiKey}`;
 }
 
-function isChatModelsListStale(cfg: {
-  chat: { baseUrl: string; apiKey: string };
-}): boolean {
+function isChatModelsListStale(cfg: AIConfig): boolean {
   if (!chatModelsListFingerprint.value) return true;
   return chatModelsListFingerprint.value !== chatEndpointFingerprint(cfg);
 }
@@ -556,10 +554,11 @@ async function refreshChatModels(opts?: { composerSuccessFlash?: boolean }) {
   let ok = false;
   try {
     const cfg = await window.colorTxt.ai.configGet();
+    const chat = readActiveChatEndpoint(cfg);
     const fp = chatEndpointFingerprint(cfg);
     const r = await window.colorTxt.ai.modelsList({
-      baseUrl: cfg.chat.baseUrl,
-      apiKey: cfg.chat.apiKey,
+      baseUrl: chat.baseUrl,
+      apiKey: chat.apiKey,
     });
     ok = r.ok;
     if (r.ok) {
