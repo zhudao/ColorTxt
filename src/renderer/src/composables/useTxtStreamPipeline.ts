@@ -2,21 +2,37 @@ import { nextTick, type Ref } from "vue";
 import {
   applyLeadIndentFullWidth,
   chapterTitleForDisplay,
-  physicalRangeToDisplayColumns,
 } from "../chapter";
 import type ReaderMain from "../components/ReaderMain.vue";
+import {
+  annotationColumnMapOptions,
+  physicalColumnToDisplayColumn,
+  replaceTextInPhysicalLines,
+  type AnnotationRange,
+} from "../utils/readerAnnotations";
 import {
   physicalLineToChapterTitleDisplayLine,
   physicalLineToLastFilteredDisplayLine,
   shiftChapterTitleDisplayLineMap,
 } from "../reader/lineMapping";
 import { formatPhysicalLinesForReaderAsync } from "../reader/readerDisplayPipeline";
+import type { ChapterTitleBlankMode } from "../constants/appUi";
 import { visibleReaderLineFromPhysicalRaw } from "../ebook/ebookTitleMatch";
 import { stripMdInternalLinksFromPhysicalLinesAsync } from "../markdown/markdownInternalLinks";
 import { yieldToUi } from "../ebook/yieldToUi";
 import type { ReaderViewportRestoreAnchor } from "../reader/readerViewportAnchor";
 import { floorReadingProgressPercentByLines } from "../utils/format";
 import { createPhysicalLineSplitter } from "../services/physicalLineStream";
+import { applyTextDisplayConverts } from "../services/textConvertApply";
+import type {
+  TextConvertWidthMode,
+  TextConvertZhMode,
+} from "@shared/textConvertTypes";
+import {
+  applyReplaceRulesToDisplayText,
+  filterEnabledReplaceRules,
+} from "@shared/bookSource/replaceRuleApply";
+import type { ReplaceRule } from "@shared/bookSource/replaceRule";
 
 type ReaderRef = Ref<InstanceType<typeof ReaderMain> | null>;
 
@@ -30,7 +46,15 @@ export function useTxtStreamPipeline(deps: {
   readerEditMode: Ref<boolean>;
   compressBlankLines: Ref<boolean>;
   compressBlankKeepOneBlank: Ref<boolean>;
+  chapterTitleBlankMode: Ref<ChapterTitleBlankMode>;
   leadIndentFullWidth: Ref<boolean>;
+  textConvertZh: Ref<TextConvertZhMode>;
+  textConvertLetter: Ref<TextConvertWidthMode>;
+  textConvertDigit: Ref<TextConvertWidthMode>;
+  /** 文本替换（阅读展示在转换前套用） */
+  replaceRules: Ref<ReplaceRule[]>;
+  /** 替换范围 / 排除范围匹配用书名（主窗口为当前文件名） */
+  replaceRuleBookName: Ref<string>;
   chapterMinCharCount: Ref<number>;
   currentFileIsMarkdown: Ref<boolean>;
   /** 展示正文写入 Monaco 且插图/内链处理完成后 */
@@ -281,6 +305,7 @@ export function useTxtStreamPipeline(deps: {
       {
         compressBlankLines: deps.compressBlankLines.value,
         compressBlankKeepOneBlank: deps.compressBlankKeepOneBlank.value,
+        chapterTitleBlankMode: deps.chapterTitleBlankMode.value,
         leadIndentFullWidth: deps.leadIndentFullWidth.value,
         minCharCount: deps.chapterMinCharCount.value,
         isMarkdown: deps.currentFileIsMarkdown.value,
@@ -289,21 +314,56 @@ export function useTxtStreamPipeline(deps: {
     );
     await yieldToUi();
 
+    let displayText = formatted.text;
+    if (!deps.readerEditMode.value) {
+      const bookName = deps.replaceRuleBookName.value;
+      const contentRules = filterEnabledReplaceRules(
+        deps.replaceRules.value,
+        bookName,
+        "",
+        "content",
+      );
+      const titleRules = filterEnabledReplaceRules(
+        deps.replaceRules.value,
+        bookName,
+        "",
+        "title",
+      );
+      if (contentRules.length > 0 || titleRules.length > 0) {
+        // 正文规则套全文；标题行只套「作用于标题」（不走按行 trim，以免抵消行首缩进）
+        const titleDisplayLines = new Set(
+          formatted.chapterTitleDisplayLineByPhysical.values(),
+        );
+        displayText = applyReplaceRulesToDisplayText(
+          displayText,
+          contentRules,
+          titleRules,
+          titleDisplayLines,
+        );
+      }
+    }
+    displayText = await applyTextDisplayConverts(displayText, {
+      zh: deps.textConvertZh.value,
+      letter: deps.textConvertLetter.value,
+      digit: deps.textConvertDigit.value,
+    });
+    await yieldToUi();
+
     filteredDisplayToPhysicalLine = formatted.displayLineToPhysicalLine;
     lastFormattedDisplayLines =
-      formatted.text.length > 0 ? formatted.text.split("\n") : [];
+      displayText.length > 0 ? displayText.split("\n") : [];
     chapterTitleDisplayLineByPhysical = new Map(
       formatted.chapterTitleDisplayLineByPhysical,
     );
     lineCount = formatted.lineCount;
-    deps.totalCharCount.value = formatted.text.length;
+    deps.totalCharCount.value = displayText.length;
     deps.totalLineCount.value = formatted.lineCount;
 
     const isHeavyDocument =
-      formatted.lineCount > 80_000 || formatted.text.length > 25_000_000;
+      formatted.lineCount > 80_000 || displayText.length > 25_000_000;
 
     r.setPendingEbookInternalLinkSidecar?.(formatted.ebookSidecar ?? null);
-    await r.setFullText(formatted.text, { heavy: isHeavyDocument });
+    await r.setFullText(displayText, { heavy: isHeavyDocument });
     if (deps.leadIndentFullWidth.value) {
       r.normalizeLastLineLeadIndent?.();
     }
@@ -352,25 +412,70 @@ export function useTxtStreamPipeline(deps: {
     return physicalLineContents[idx] ?? "";
   }
 
+  /** 当前展示层单行文本（优先 Monaco，与装饰/选区一致；回退 `lastFormattedDisplayLines`） */
+  function getDisplayLineContent(displayLine: number): string {
+    const reader = deps.readerRef.value;
+    const ln = Math.max(1, Math.floor(displayLine));
+    if (reader && typeof reader.getEditorLineContent === "function") {
+      const lineCount =
+        typeof reader.getModelLineCount === "function"
+          ? reader.getModelLineCount()
+          : 0;
+      if (lineCount > 0 && ln <= lineCount) {
+        return reader.getEditorLineContent(ln);
+      }
+    }
+    if (deps.readerEditMode.value) return "";
+    const idx = ln - 1;
+    return lastFormattedDisplayLines[idx] ?? "";
+  }
+
   /** 侧栏搜索等在物理行上的匹配 → Monaco 展示行列号 */
   function physicalSearchRangeToDisplayColumns(
     physicalLine: number,
     range: { start: number; end: number },
   ): { startColumn: number; endColumn: number } {
     const raw = getPhysicalLineContent(physicalLine);
-    // 编辑态 Monaco 为磁盘原文，无压缩空行/行首缩进展示处理
-    if (deps.readerEditMode.value || !deps.leadIndentFullWidth.value) {
-      return {
-        startColumn: range.start + 1,
-        endColumn: Math.max(range.start + 2, range.end + 1),
-      };
-    }
-    return physicalRangeToDisplayColumns(raw, range);
+    const columnMap = annotationColumnMapOptions({
+      readerEditMode: deps.readerEditMode.value,
+      leadIndentFullWidth: deps.leadIndentFullWidth.value,
+    });
+    const startColumn = physicalColumnToDisplayColumn(
+      raw,
+      range.start + 1,
+      columnMap,
+    );
+    const endColumn = Math.max(
+      physicalColumnToDisplayColumn(raw, range.start + 2, columnMap),
+      physicalColumnToDisplayColumn(raw, range.end + 1, columnMap),
+    );
+    return { startColumn, endColumn };
   }
 
   function getPhysicalFilePlainText(): string {
     if (physicalLineContents.length === 0) return "";
     return physicalLineContents.join("\n");
+  }
+
+  /** 预览物理区间替换后的全文；失败返回 null（不改内存） */
+  function buildPlainTextAfterPhysicalReplace(
+    range: AnnotationRange,
+    newText: string,
+  ): string | null {
+    const next = replaceTextInPhysicalLines(
+      physicalLineContents,
+      range,
+      newText,
+    );
+    if (!next) return null;
+    return next.join("\n");
+  }
+
+  /** 用纯文本覆盖物理行镜像（局部编辑写盘成功后提交） */
+  function commitPhysicalLinesFromPlainText(text: string) {
+    physicalLineContents = text.length > 0 ? text.split("\n") : [""];
+    deps.totalCharCount.value = text.length;
+    deps.totalLineCount.value = physicalLineContents.length;
   }
 
   function resyncMirrorFromReader() {
@@ -416,8 +521,11 @@ export function useTxtStreamPipeline(deps: {
     getLineCount,
     getDisplayLineToPhysicalLine,
     getPhysicalLineContent,
+    getDisplayLineContent,
     physicalSearchRangeToDisplayColumns,
     getPhysicalFilePlainText,
+    buildPlainTextAfterPhysicalReplace,
+    commitPhysicalLinesFromPlainText,
     resyncMirrorFromReader,
     resyncFormattedDisplayLinesFromReader,
     removeFilteredDisplayLinesAtOriginalIndices,

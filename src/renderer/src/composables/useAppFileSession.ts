@@ -8,7 +8,7 @@ import {
   mergeTxtFileLists,
   type TxtFileItem,
 } from "../services/fileListService";
-import { appAlert } from "../services/appDialog";
+import { appAlert, appConfirm, appPrompt } from "../services/appDialog";
 import { prepareOpenFile } from "../services/fileOpenService";
 import { loadSessionSnapshot } from "../stores/cacheStore";
 import { useAppPersistence } from "./useAppPersistence";
@@ -27,11 +27,20 @@ import {
 } from "../constants/fileCategories";
 import {
   APP_DISPLAY_NAME,
+  bookPackPromptShowPasswordKey,
   sessionKey,
   fileListKey,
 } from "../constants/appUi";
-import { COLOR_TXT_OPEN_BOOK_EXTENSIONS } from "@shared/colorTxtOpenSaveDialog";
+import {
+  COLOR_TXT_BOOK_PACK_ENCRYPTED_FILE_EXT,
+  COLOR_TXT_BOOK_PACK_FILE_EXT,
+  COLOR_TXT_OPEN_BOOK_EXTENSIONS,
+} from "@shared/colorTxtOpenSaveDialog";
 import { fileHistoryKey } from "../stores/recentHistoryStore";
+import { looksLikeZipBookPackCandidate } from "../utils/readerBookPack";
+import { importReaderBookPack } from "../utils/readerBookPackImport";
+import type { FileMetaRecord } from "../stores/fileMetaStore";
+import { appToast } from "../services/appToast";
 
 /** 等浏览器下一帧再续，让 Monaco 在空文档上完成绘制，避免黏性章节标题滞留 */
 function waitNextPaintFrame(): Promise<void> {
@@ -98,15 +107,25 @@ export function useAppFileSession(deps: {
   readingProgressSynced: Ref<boolean>;
   ebookConvertOutputDir: Ref<string>;
   ebookParsing: Ref<boolean>;
+  /** 彩读书包解包蒙层 */
+  bookPackUnpacking: Ref<boolean>;
   /** 正在转换的电子书源路径（用于底栏在 resetSession 之前显示「转换中…」） */
   ebookConversionSourcePath: Ref<string | null>;
+  /** PDF 等分页转换进度，如 `12/480`；非转换中为空串 */
+  ebookConvertProgressText: Ref<string>;
   readerEditMode: Ref<boolean>;
   readerEditorDirty: Ref<boolean>;
+  fileMetaRecords: Ref<FileMetaRecord[]>;
+  /** 彩读书包无同名书时的解压目录（空串回退 UnpackedBooks） */
+  bookPackUnpackDir: Ref<string>;
+  /** 彩读书包默认密码（空串表示明文包） */
+  bookPackPassword: Ref<string>;
+  characterPortraitCacheDir: Ref<string>;
   /**
-   * 在合并进 `txtFiles` **之后**调用：传入本次新加入的路径；
-   * 若当前筛选为具体分类则写入列表项 `category`；为「全部 / 未分类」时不改。
+   * 在合并进 `txtFiles` **之后**调用：传入本次添加涉及的路径（新加入 + 已存在再次添加）；
+   * 若当前筛选非「全部」，则写入/清除列表项 `category`（具体分类名或「未分类」）。
    */
-  applyCurrentFileCategoryIfConcrete?: (newPaths: string[]) => void;
+  applyCurrentFileCategoryIfConcrete?: (paths: string[]) => void;
   /** 切书/关文件前：返回 false 表示用户取消（保留未保存编辑） */
   confirmIfReaderEditDiscard?: () => Promise<boolean>;
 }) {
@@ -205,7 +224,13 @@ export function useAppFileSession(deps: {
         forceConvert: options?.forceEbookConvert,
         onActualConversionStart: async () => {
           deps.ebookConversionSourcePath.value = filePath;
+          deps.ebookConvertProgressText.value = "";
           deps.ebookParsing.value = true;
+          await nextTick();
+          await yieldToUi();
+        },
+        onPdfProgress: async ({ page, pageCount }) => {
+          deps.ebookConvertProgressText.value = `${page}/${pageCount}`;
           await nextTick();
           await yieldToUi();
         },
@@ -244,6 +269,7 @@ export function useAppFileSession(deps: {
     } finally {
       deps.ebookParsing.value = false;
       deps.ebookConversionSourcePath.value = null;
+      deps.ebookConvertProgressText.value = "";
     }
   }
 
@@ -457,6 +483,14 @@ export function useAppFileSession(deps: {
           1,
           Math.floor(anchorRaw),
         );
+      } else if (hasAnchor) {
+        // 彩读书包等仅持久化视口物理行、无 Monaco viewState
+        deps.pendingRestoreEditorViewState.value = null;
+        deps.pendingRestoreViewportTopPhysicalLine.value = null;
+        deps.pendingRestorePhysicalLine.value = Math.max(
+          1,
+          Math.floor(anchorRaw!),
+        );
       } else {
         deps.pendingRestoreEditorViewState.value = null;
         deps.pendingRestoreViewportTopPhysicalLine.value = null;
@@ -491,17 +525,371 @@ export function useAppFileSession(deps: {
     }
     const r = await window.colorTxt.showOpenDialog({
       properties: ["openFile"],
-      filters: [
-        {
-          name: "电子书",
-          extensions: [...COLOR_TXT_OPEN_BOOK_EXTENSIONS],
-        },
-      ],
+      filters: openBookOrPackDialogFilters(),
     });
     const filePath =
       r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0];
     if (!filePath) return;
     await openFilePath(filePath);
+  }
+
+  /** 侧栏加文件：多选正文 / 电子书 / 书包，走 importPathsIntoFileList（不打开） */
+  async function pickTxtFilesIntoFileList() {
+    if (!window.colorTxt) {
+      await appAlert("preload 未注入：请重启应用（或检查主进程 preload 路径）");
+      return;
+    }
+    const r = await window.colorTxt.showOpenDialog({
+      properties: ["openFile", "multiSelections"],
+      filters: openBookOrPackDialogFilters(),
+    });
+    if (r.canceled || r.filePaths.length === 0) return;
+    await importPathsIntoFileList(r.filePaths);
+  }
+
+  function openBookOrPackDialogFilters(): {
+    name: string;
+    extensions: string[];
+  }[] {
+    return [
+      {
+        name: "电子书",
+        extensions: [
+          ...COLOR_TXT_OPEN_BOOK_EXTENSIONS,
+          COLOR_TXT_BOOK_PACK_FILE_EXT,
+          COLOR_TXT_BOOK_PACK_ENCRYPTED_FILE_EXT,
+        ],
+      },
+      {
+        name: "彩读书包",
+        extensions: [
+          COLOR_TXT_BOOK_PACK_FILE_EXT,
+          COLOR_TXT_BOOK_PACK_ENCRYPTED_FILE_EXT,
+        ],
+      },
+      { name: "所有文件", extensions: ["*"] },
+    ];
+  }
+
+  async function tryImportReaderBookPack(filePath: string): Promise<boolean> {
+    if (!looksLikeZipBookPackCandidate(filePath)) return false;
+    deps.bookPackUnpacking.value = true;
+    try {
+      const result = await importReaderBookPack({
+        packFilePath: filePath,
+        txtFiles: deps.txtFiles.value,
+        fileMetaRecords: deps.fileMetaRecords.value,
+        ebookConvertOutputDir: deps.ebookConvertOutputDir.value,
+        portraitCacheDir: deps.characterPortraitCacheDir.value,
+        bookPackUnpackDir: deps.bookPackUnpackDir.value,
+        password: deps.bookPackPassword.value,
+        askPassword: async (reason) => {
+          deps.bookPackUnpacking.value = false;
+          try {
+            let revealPassword = false;
+            try {
+              revealPassword =
+                localStorage.getItem(bookPackPromptShowPasswordKey) === "1";
+            } catch {
+              revealPassword = false;
+            }
+            return await appPrompt(
+              reason === "wrongPassword"
+                ? "密码不正确，请重新输入："
+                : "该书包已加密，请输入密码：",
+              {
+                title: "打开书包",
+                inputType: "password",
+                placeholder: "书包密码",
+                showPasswordToggle: true,
+                revealPassword,
+                onRevealPasswordChange: (reveal) => {
+                  try {
+                    localStorage.setItem(
+                      bookPackPromptShowPasswordKey,
+                      reveal ? "1" : "0",
+                    );
+                  } catch {
+                    // ignore
+                  }
+                },
+              },
+            );
+          } finally {
+            deps.bookPackUnpacking.value = true;
+          }
+        },
+        currentFilePath: deps.currentFile.value,
+        physicalReaderPath: deps.physicalReaderPath.value,
+        recentFiles: deps.recentFiles.value,
+        confirmOverwrite: async (message, detail) => {
+          // 确认框需盖过解包蒙层，先关掉再弹
+          deps.bookPackUnpacking.value = false;
+          try {
+            const full = detail ? `${message}\n\n${detail}` : message;
+            return await appConfirm(full);
+          } finally {
+            deps.bookPackUnpacking.value = true;
+          }
+        },
+      });
+      if (!result.ok) {
+        deps.bookPackUnpacking.value = false;
+        if ("cancelled" in result && result.cancelled) return true;
+        if ("skipped" in result && result.skipped) return true;
+        await appAlert("error" in result ? result.error : "导入书包失败");
+        return true;
+      }
+      deps.txtFiles.value = result.txtFiles;
+      deps.fileMetaRecords.value = result.fileMetaRecords;
+      persistFileListCache();
+      persistFileMeta();
+      deps.bookPackUnpacking.value = false;
+      appToast(result.message, { kind: "success" });
+      await openFilePath(result.openPath, {
+        restorePhysicalLine: result.restorePhysicalLine,
+        skipRememberCurrent: true,
+        skipReaderEditGuard: true,
+      });
+      return true;
+    } finally {
+      deps.bookPackUnpacking.value = false;
+    }
+  }
+
+  function partitionBookPackPaths(items: { path: string }[]): {
+    books: { path: string }[];
+    packs: string[];
+  } {
+    const books: { path: string }[] = [];
+    const packs: string[] = [];
+    for (const it of items) {
+      if (looksLikeZipBookPackCandidate(it.path)) packs.push(it.path);
+      else books.push(it);
+    }
+    return { books, packs };
+  }
+
+  function prependPasswordBook(book: string[], password: string): string[] {
+    const pw = password.trim();
+    if (!pw) return book;
+    const rest = book.filter((p) => p !== pw);
+    return [pw, ...rest];
+  }
+
+  /** 侧栏加文件：批量导入书包（不打开；临时密码本仅本次流程） */
+  async function importBookPacksIntoFileList(
+    packPaths: string[],
+    opts?: {
+      /** 不弹汇总 toast，且不显示「解包中」蒙层（密码/覆盖确认仍会弹出） */
+      silent?: boolean;
+      /** 跨多次调用延续的密码本（WebDAV 串联下载导入） */
+      passwordBook?: string[];
+      skipOnDecryptFail?: boolean;
+    },
+  ): Promise<{
+    imported: Array<{ packPath: string; openPath: string }>;
+    okCount: number;
+    skipCount: number;
+    failCount: number;
+    passwordBook: string[];
+    skipOnDecryptFail: boolean;
+  }> {
+    const empty = {
+      imported: [] as Array<{ packPath: string; openPath: string }>,
+      okCount: 0,
+      skipCount: 0,
+      failCount: 0,
+      passwordBook: [] as string[],
+      skipOnDecryptFail: false,
+    };
+    if (packPaths.length === 0) {
+      return {
+        ...empty,
+        passwordBook: opts?.passwordBook ? [...opts.passwordBook] : [],
+        skipOnDecryptFail: opts?.skipOnDecryptFail ?? false,
+      };
+    }
+    const uniquePacks: string[] = [];
+    const seen = new Set<string>();
+    for (const p of packPaths) {
+      const key = p.trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      uniquePacks.push(key);
+    }
+    if (uniquePacks.length === 0) {
+      return {
+        ...empty,
+        passwordBook: opts?.passwordBook ? [...opts.passwordBook] : [],
+        skipOnDecryptFail: opts?.skipOnDecryptFail ?? false,
+      };
+    }
+
+    const silent = Boolean(opts?.silent);
+    let passwordBook = prependPasswordBook(
+      opts?.passwordBook ? [...opts.passwordBook] : [],
+      deps.bookPackPassword.value,
+    );
+    let skipOnDecryptFail = opts?.skipOnDecryptFail ?? false;
+    let okCount = 0;
+    let skipCount = 0;
+    let failCount = 0;
+    const knownBefore = new Set(deps.txtFiles.value.map((f) => f.path));
+    const categorizePaths = new Set<string>();
+    const imported: Array<{ packPath: string; openPath: string }> = [];
+
+    const setUnpacking = (v: boolean) => {
+      if (silent) return;
+      deps.bookPackUnpacking.value = v;
+    };
+
+    setUnpacking(true);
+    try {
+      for (const packPath of uniquePacks) {
+        const result = await importReaderBookPack({
+          packFilePath: packPath,
+          txtFiles: deps.txtFiles.value,
+          fileMetaRecords: deps.fileMetaRecords.value,
+          ebookConvertOutputDir: deps.ebookConvertOutputDir.value,
+          portraitCacheDir: deps.characterPortraitCacheDir.value,
+          bookPackUnpackDir: deps.bookPackUnpackDir.value,
+          tryPasswords: passwordBook,
+          askPassword: async (reason) => {
+            // 勾选「解密失败时跳过」后再次解密失败：直接跳过本包
+            if (reason === "wrongPassword" && skipOnDecryptFail) {
+              return { skip: true };
+            }
+            setUnpacking(false);
+            try {
+              let revealPassword = false;
+              try {
+                revealPassword =
+                  localStorage.getItem(bookPackPromptShowPasswordKey) === "1";
+              } catch {
+                revealPassword = false;
+              }
+              const input = await appPrompt(
+                reason === "wrongPassword"
+                  ? "密码不正确，请重新输入："
+                  : "该书包已加密，请输入密码：",
+                {
+                  title: "打开书包",
+                  inputType: "password",
+                  placeholder: "书包密码",
+                  showPasswordToggle: true,
+                  revealPassword,
+                  onRevealPasswordChange: (reveal) => {
+                    try {
+                      localStorage.setItem(
+                        bookPackPromptShowPasswordKey,
+                        reveal ? "1" : "0",
+                      );
+                    } catch {
+                      // ignore
+                    }
+                  },
+                  showSkipOnFailToggle: true,
+                  skipOnFail: skipOnDecryptFail,
+                  onSkipOnFailChange: (skip) => {
+                    skipOnDecryptFail = skip;
+                  },
+                },
+              );
+              // 取消：只跳过当前书包
+              if (input === null) return { skip: true };
+              return input;
+            } finally {
+              setUnpacking(true);
+            }
+          },
+          currentFilePath: deps.currentFile.value,
+          physicalReaderPath: deps.physicalReaderPath.value,
+          recentFiles: deps.recentFiles.value,
+          confirmOverwrite: async (message, detail) => {
+            setUnpacking(false);
+            try {
+              const full = detail ? `${message}\n\n${detail}` : message;
+              return await appConfirm(full);
+            } finally {
+              setUnpacking(true);
+            }
+          },
+        });
+
+        if (!result.ok) {
+          if ("skipped" in result && result.skipped) {
+            skipCount += 1;
+            continue;
+          }
+          if ("cancelled" in result && result.cancelled) {
+            // 覆盖确认取消等：当作跳过本包
+            skipCount += 1;
+            continue;
+          }
+          failCount += 1;
+          continue;
+        }
+
+        okCount += 1;
+        imported.push({ packPath, openPath: result.openPath });
+        categorizePaths.add(result.openPath);
+        if (result.usedPassword) {
+          passwordBook = prependPasswordBook(passwordBook, result.usedPassword);
+        }
+        deps.txtFiles.value = result.txtFiles;
+        deps.fileMetaRecords.value = result.fileMetaRecords;
+        for (const f of result.txtFiles) {
+          if (!knownBefore.has(f.path)) {
+            knownBefore.add(f.path);
+            categorizePaths.add(f.path);
+          }
+        }
+
+        // 命中当前已打开文件时按锚点重新打开以恢复进度
+        if (
+          result.restorePhysicalLine != null &&
+          deps.currentFile.value &&
+          result.openPath === deps.currentFile.value
+        ) {
+          setUnpacking(false);
+          try {
+            await openFilePath(result.openPath, {
+              restorePhysicalLine: result.restorePhysicalLine,
+              skipRememberCurrent: true,
+              skipReaderEditGuard: true,
+              keepSidebarTab: true,
+            });
+          } finally {
+            setUnpacking(true);
+          }
+        }
+      }
+    } finally {
+      deps.bookPackUnpacking.value = false;
+    }
+
+    if (categorizePaths.size > 0) {
+      deps.applyCurrentFileCategoryIfConcrete?.([...categorizePaths]);
+    }
+    persistFileListCache();
+    persistFileMeta();
+
+    const parts: string[] = [];
+    if (okCount > 0) parts.push(`成功 ${okCount}`);
+    if (skipCount > 0) parts.push(`跳过 ${skipCount}`);
+    if (failCount > 0) parts.push(`失败 ${failCount}`);
+    if (parts.length > 0 && !silent) {
+      appToast(`书包导入：${parts.join("，")}`, { kind: "info" });
+    }
+    return {
+      imported,
+      okCount,
+      skipCount,
+      failCount,
+      passwordBook,
+      skipOnDecryptFail,
+    };
   }
 
   function openFileFromSidebar(item: TxtFileItem) {
@@ -533,15 +921,24 @@ export function useAppFileSession(deps: {
         return;
       }
       if (!result.ok) return;
-      const knownPaths = new Set(deps.txtFiles.value.map((f) => f.path));
-      const newPaths = result.files
-        .map((f) => f.path)
-        .filter((path) => !knownPaths.has(path));
+      const { books, packs } = partitionBookPackPaths(result.files);
+      const bookItems = books.map((b) => {
+        const hit = result.files.find((f) => f.path === b.path);
+        return (
+          hit ??
+          normalizeTxtFileItem({
+            name: basenameFromPath(b.path),
+            path: b.path,
+            size: 0,
+          })
+        );
+      });
+      const incomingPaths = bookItems.map((f) => f.path);
       deps.txtFiles.value = mergeTxtFileLists(
         deps.txtFiles.value,
-        result.files,
+        bookItems,
       );
-      deps.applyCurrentFileCategoryIfConcrete?.(newPaths);
+      deps.applyCurrentFileCategoryIfConcrete?.(incomingPaths);
       persistFileListCache();
       deps.sidebarTab.value = "files";
       centerFileListIfCurrentInList();
@@ -550,6 +947,12 @@ export function useAppFileSession(deps: {
         !deps.txtFiles.value.some((f) => f.path === deps.currentFile.value)
       ) {
         scrollFileListsToIndex(0);
+      }
+      if (packs.length > 0) {
+        unsub();
+        deps.dirListScanning.value = false;
+        deps.dirListCurrentName.value = "";
+        await importBookPacksIntoFileList(packs);
       }
     } finally {
       unsub();
@@ -558,37 +961,60 @@ export function useAppFileSession(deps: {
     }
   }
 
-  /** 拖放 / 文件列表导入：按路径顺序合并目录内 txt/电子书 或单个支持的文件 */
-  async function importPathsIntoFileList(paths: string[]) {
-    if (!window.colorTxt || paths.length === 0) return;
+  /** 拖放 / 文件列表导入：按路径顺序合并目录内 txt/电子书/书包 或单个支持的文件 */
+  async function importPathsIntoFileList(
+    paths: string[],
+    opts?: {
+      silent?: boolean;
+      passwordBook?: string[];
+      skipOnDecryptFail?: boolean;
+    },
+  ): Promise<{
+    imported: Array<{ packPath: string; openPath: string }>;
+    okCount: number;
+    skipCount: number;
+    failCount: number;
+    passwordBook: string[];
+    skipOnDecryptFail: boolean;
+  }> {
+    const empty = {
+      imported: [] as Array<{ packPath: string; openPath: string }>,
+      okCount: 0,
+      skipCount: 0,
+      failCount: 0,
+      passwordBook: opts?.passwordBook ? [...opts.passwordBook] : ([] as string[]),
+      skipOnDecryptFail: opts?.skipOnDecryptFail ?? false,
+    };
+    if (!window.colorTxt || paths.length === 0) return empty;
     const unsub = subscribeDirListTxtScan();
+    const packPaths: string[] = [];
     try {
-      const knownPaths = new Set(deps.txtFiles.value.map((f) => f.path));
       let merged = deps.txtFiles.value;
-      const newPaths: string[] = [];
+      const touchedPaths: string[] = [];
       for (const p of paths) {
         try {
           const st = await window.colorTxt.stat(p);
           if (st.isDirectory) {
             const dirResult = await window.colorTxt.listTxtFilesInDirectory(p);
-            const items = dirResult.files.map(normalizeTxtFileItem);
+            const { books, packs } = partitionBookPackPaths(dirResult.files);
+            packPaths.push(...packs);
+            const items = books
+              .map((b) => dirResult.files.find((f) => f.path === b.path))
+              .filter((x): x is NonNullable<typeof x> => Boolean(x))
+              .map(normalizeTxtFileItem);
             for (const it of items) {
-              if (!knownPaths.has(it.path)) {
-                knownPaths.add(it.path);
-                newPaths.push(it.path);
-              }
+              touchedPaths.push(it.path);
             }
             merged = mergeTxtFileLists(merged, items);
+          } else if (st.isFile && looksLikeZipBookPackCandidate(p)) {
+            packPaths.push(p);
           } else if (st.isFile && isSupportedBookPath(p)) {
             const item = normalizeTxtFileItem({
               name: basenameFromPath(p),
               path: p,
               size: st.size,
             });
-            if (!knownPaths.has(item.path)) {
-              knownPaths.add(item.path);
-              newPaths.push(item.path);
-            }
+            touchedPaths.push(item.path);
             merged = mergeTxtFileLists(merged, [item]);
           }
         } catch {
@@ -596,7 +1022,7 @@ export function useAppFileSession(deps: {
         }
       }
       deps.txtFiles.value = merged;
-      deps.applyCurrentFileCategoryIfConcrete?.(newPaths);
+      deps.applyCurrentFileCategoryIfConcrete?.(touchedPaths);
       persistFileListCache();
       deps.sidebarTab.value = "files";
       centerFileListIfCurrentInList();
@@ -611,6 +1037,10 @@ export function useAppFileSession(deps: {
       deps.dirListScanning.value = false;
       deps.dirListCurrentName.value = "";
     }
+    if (packPaths.length > 0) {
+      return await importBookPacksIntoFileList(packPaths, opts);
+    }
+    return empty;
   }
 
   function scrollFileListsToIndex(index: number) {
@@ -651,6 +1081,10 @@ export function useAppFileSession(deps: {
         suppressFileListCenterAfterLoad.value = false;
         return false;
       }
+    }
+
+    if (await tryImportReaderBookPack(filePath)) {
+      return true;
     }
 
     if (!options?.skipRememberCurrent) {
@@ -727,6 +1161,15 @@ export function useAppFileSession(deps: {
         1,
         Math.floor(anchorRaw),
       );
+    } else if (hasAnchor) {
+      // 彩读书包等仅持久化视口物理行、无 Monaco viewState
+      deps.pendingRestoreEditorViewState.value = null;
+      deps.pendingRestoreViewportTopPhysicalLine.value = null;
+      deps.pendingRestoreViewportAnchor.value = null;
+      deps.pendingRestorePhysicalLine.value = Math.max(
+        1,
+        Math.floor(anchorRaw!),
+      );
     } else {
       deps.pendingRestoreEditorViewState.value = null;
       deps.pendingRestoreViewportTopPhysicalLine.value = null;
@@ -779,6 +1222,7 @@ export function useAppFileSession(deps: {
     openFileFromSidebar,
     subscribeDirListTxtScan,
     pickTxtDirectory,
+    pickTxtFilesIntoFileList,
     importPathsIntoFileList,
     scrollFileListsToIndex,
     openFilePath,

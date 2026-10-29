@@ -5,7 +5,11 @@ import { buildBuiltinEmbeddingIpcPayload } from "@shared/builtinEmbeddingIpc";
 export async function getBuiltinEmbeddingBlockMessage(
   cfg: AIConfig,
 ): Promise<string | null> {
-  if (!cfg.embeddingEnabled || cfg.embedding.provider !== "builtin") {
+  if (
+    !cfg.aiEnabled ||
+    !cfg.embeddingEnabled ||
+    cfg.embedding.provider !== "builtin"
+  ) {
     return null;
   }
   const mid = cfg.embedding.builtinModel.trim();

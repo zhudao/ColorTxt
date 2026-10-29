@@ -54,3 +54,11 @@ export function resolveOpenAiImagesApiQuality(
   if (q === "auto") return "auto";
   return q;
 }
+
+/**
+ * DALL·E 2/3 支持顶层 `response_format`；GPT Image（`gpt-image-*`）会 400
+ * `unknown_parameter: response_format`，必须整段不传（官方固定返回 b64）。
+ */
+export function openAiImagesShouldSendResponseFormat(modelId: string): boolean {
+  return modelId.trim().toLowerCase().includes("dall-e");
+}

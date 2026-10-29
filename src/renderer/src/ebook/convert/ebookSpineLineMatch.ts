@@ -4,6 +4,7 @@
 
 import { chapterTitleForDisplay } from "../../chapter";
 import { plainTextForEbookTitleMatch } from "../ebookTitleMatch";
+import { scanMdInternalLinkAt } from "../../markdown/markdownLinkShared";
 
 export type EpubSpineSectionRange = {
   stem: string;
@@ -27,11 +28,11 @@ export function fragmentFromEbookTargetId(targetId: string): string | null {
   return hash >= 0 ? targetId.slice(hash + 1) : null;
 }
 
-const RE_MD_LINK_ONLY_LINE =
-  /^\s*\[[^\]]*\]\(#[^)\s"]+(?:\s+"[^"]*")?\)\s*$/;
-
 function isMdInternalLinkOnlyLine(line: string): boolean {
-  return RE_MD_LINK_ONLY_LINE.test(line);
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("[")) return false;
+  const link = scanMdInternalLinkAt(trimmed, 0);
+  return link != null && link.index === 0 && link.index + link.full.length === trimmed.length;
 }
 
 /** 在节内按 `targetId` 的 fragment 查找已注入的 `<span id="…">` 行 */
@@ -129,6 +130,58 @@ export function findTitleLineInSpineSection(
   const want = chapterTitleForDisplay(title);
   if (!want) return null;
   return findExactMatchLine(lines, start, end, want);
+}
+
+const RE_TOC_SPAN_ONLY_LINE =
+  /^\s*<span\s+id="toc_[^"]+"\s*><\/span>\s*$/i;
+
+/** 嵌入目录注入后：`<span id="toc_N">` 下一行为匹配 ATX 标题时返回该行号（多命中取离 `nearLine` 最近者） */
+export function findEmbeddedTocSpanLineForTitle(
+  lines: readonly string[],
+  start: number,
+  end: number,
+  title: string,
+  nearLine?: number,
+): number | null {
+  const want = chapterTitleForDisplay(title);
+  if (!want) return null;
+  const anchor = nearLine ?? start;
+  let best: number | null = null;
+  let bestDist = Infinity;
+  for (let i = start; i <= end; i++) {
+    if (!RE_TOC_SPAN_ONLY_LINE.test(lines[i] ?? "")) continue;
+    if (i >= lines.length - 1) break;
+    const nextPlain = visiblePlainAtLine(lines, i + 1);
+    if (nextPlain !== want) continue;
+    const dist = Math.abs(i - anchor);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = i;
+    }
+  }
+  return best;
+}
+
+/** TOC / stem 锚点插入后，按行变更量前移后续 spine 节的 startLine / endLine */
+export function shiftSpineSectionRangesForMutations(
+  ranges: EpubSpineSectionRange[],
+  mutations: readonly LineMutation[],
+): void {
+  const deltaByAt = new Map<number, number>();
+  for (const m of mutations) {
+    if (m.kind !== "insert" || m.replace) continue;
+    deltaByAt.set(m.at, (deltaByAt.get(m.at) ?? 0) + 1);
+  }
+  const entries = [...deltaByAt.entries()].sort((a, b) => a[0] - b[0]);
+  let offset = 0;
+  for (const [at, delta] of entries) {
+    const pos = at + offset;
+    for (const r of ranges) {
+      if (r.startLine >= pos) r.startLine += delta;
+      if (r.endLine >= pos) r.endLine += delta;
+    }
+    offset += delta;
+  }
 }
 
 export function applyLineMutations(

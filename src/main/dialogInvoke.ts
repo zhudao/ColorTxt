@@ -44,11 +44,13 @@ function sanitizeFilters(raw: unknown): FileFilter[] | undefined {
     const extensions: string[] = [];
     for (const ext of item.extensions) {
       if (typeof ext !== "string") continue;
-      const t = ext
-        .trim()
-        .replace(/^\./, "")
-        .toLowerCase()
-        .replace(/[^a-z0-9_-]/g, "");
+      const raw = ext.trim().replace(/^\./, "").toLowerCase();
+      if (raw === "*") {
+        extensions.push("*");
+        if (extensions.length >= MAX_EXTENSIONS_PER_FILTER) break;
+        continue;
+      }
+      const t = raw.replace(/[^a-z0-9_-]/g, "");
       if (!t || t.length > MAX_EXT_TOKEN_LEN) continue;
       extensions.push(t);
       if (extensions.length >= MAX_EXTENSIONS_PER_FILTER) break;

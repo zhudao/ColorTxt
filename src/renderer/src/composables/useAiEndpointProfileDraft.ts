@@ -127,7 +127,9 @@ export function useChatProfileDraft(modelValue: Ref<AIConfig>) {
 
   const profileSelectItems = computed(() =>
     modelValue.value.chatProfiles.map((p) => {
-      const providerLabel = resolveChatProfileProviderLabel(p.chat);
+      const chat =
+        p.id === editingId.value ? modelValue.value.chat : p.chat;
+      const providerLabel = resolveChatProfileProviderLabel(chat);
       const displayName = p.name.trim();
       return {
         id: p.id,
@@ -258,7 +260,9 @@ export function useTxt2ImgProfileDraft(modelValue: Ref<AIConfig>) {
     );
     if (idx < 0) return;
     const prev = modelValue.value.txt2imgProfiles[idx]!;
+    const prevEnabled = modelValue.value.txt2img.enabled;
     const txt2img = defaultTxt2ImgProfileResetConfig();
+    txt2img.enabled = prevEnabled;
     modelValue.value.txt2imgProfiles[idx] = {
       ...prev,
       txt2img,
@@ -269,7 +273,9 @@ export function useTxt2ImgProfileDraft(modelValue: Ref<AIConfig>) {
 
   const profileSelectItems = computed(() =>
     modelValue.value.txt2imgProfiles.map((p) => {
-      const providerLabel = resolveTxt2ImgProfileProviderLabel(p.txt2img);
+      const txt2img =
+        p.id === editingId.value ? modelValue.value.txt2img : p.txt2img;
+      const providerLabel = resolveTxt2ImgProfileProviderLabel(txt2img);
       const displayName = p.name.trim();
       return {
         id: p.id,

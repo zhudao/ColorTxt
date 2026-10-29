@@ -7,6 +7,8 @@ import {
   defaultAIConfig,
   defaultTxt2ImgConfig,
   EMPTY_TOKEN_PRICE_PER_MILLION,
+  MAX_TOOL_ROUNDS_MAX,
+  MAX_TOOL_ROUNDS_MIN,
   normalizeTokenPricePerMillion,
   normalizeTxt2ImgConfig,
 } from "./aiTypes";
@@ -16,6 +18,7 @@ import {
   findTxt2ImgBackendPreset,
   normalizeChatPresetBaseUrl,
 } from "./apiEndpointPresets";
+import { normalizeSystemPromptExtraMode } from "./aiSystemPromptPresets";
 
 export const MAX_AI_ENDPOINT_PROFILES = 12;
 export const LEGACY_DEFAULT_PROFILE_ID = "profile-default";
@@ -56,10 +59,23 @@ export function normalizeChatEndpoint(raw: unknown): AIChatEndpoint {
   ) {
     d.slidingWindowSize = Math.min(64, Math.max(1, Math.trunc(o.slidingWindowSize)));
   }
+  if (
+    typeof o.maxToolRounds === "number" &&
+    Number.isFinite(o.maxToolRounds)
+  ) {
+    d.maxToolRounds = Math.min(
+      MAX_TOOL_ROUNDS_MAX,
+      Math.max(MAX_TOOL_ROUNDS_MIN, Math.trunc(o.maxToolRounds)),
+    );
+  }
   if (typeof o.systemPromptExtra === "string") {
     const t = o.systemPromptExtra;
     d.systemPromptExtra = t.length > 8_000 ? t.slice(0, 8_000) : t;
   }
+  d.systemPromptExtraMode = normalizeSystemPromptExtraMode(
+    o.systemPromptExtraMode,
+    d.systemPromptExtra,
+  );
   d.tokenPricePerMillion = normalizeTokenPricePerMillion(o.tokenPricePerMillion);
   if (d.baseUrl.trim()) {
     d.baseUrl = normalizeChatPresetBaseUrl(d.baseUrl);
@@ -398,6 +414,54 @@ export function hydrateTxt2ImgProfilesApiKeys(
       keys[p.id] = p.txt2img.apiKey.trim();
     }
   }
+}
+
+/**
+ * 升级合并配置后 profile id 变化时，将保险库中无主（孤儿）密钥挂回活跃方案。
+ * 不挪动仍属于其它现存方案的密钥。
+ */
+export function reconcileOrphanProfileKeys(
+  profiles: Array<{ id: string }>,
+  activeProfileId: string,
+  keys: Record<string, string>,
+): boolean {
+  const activeId = activeProfileId.trim();
+  if (!activeId || keys[activeId]?.trim()) return false;
+
+  const profileIds = new Set(profiles.map((p) => p.id));
+  const orphans = Object.entries(keys).filter(
+    ([id, key]) => key.trim() && !profileIds.has(id),
+  );
+  if (orphans.length === 0) return false;
+
+  const chosen =
+    orphans.length === 1
+      ? orphans[0]![1].trim()
+      : (
+          orphans.find(([id]) => id === LEGACY_DEFAULT_PROFILE_ID) ?? orphans[0]
+        )![1].trim();
+  keys[activeId] = chosen;
+  return true;
+}
+
+/** 保存时合并保险库既有映射：更新当前方案，保留未匹配 id 的孤儿密钥 */
+export function mergeProfileKeyMapsForSave(
+  profiles: Array<{ id: string }>,
+  collected: Record<string, string>,
+  existingVault: Record<string, string>,
+): Record<string, string> {
+  const profileIds = new Set(profiles.map((p) => p.id));
+  const out: Record<string, string> = {};
+
+  for (const [id, key] of Object.entries(existingVault)) {
+    const k = key.trim();
+    if (k && !profileIds.has(id)) out[id] = k;
+  }
+  for (const [id, key] of Object.entries(collected)) {
+    const k = key.trim();
+    if (k) out[id] = k;
+  }
+  return out;
 }
 
 export function defaultChatProfileResetEndpoint(): AIChatEndpoint {

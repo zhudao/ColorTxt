@@ -4,10 +4,7 @@
  */
 
 import { chapterTitleForDisplay } from "../chapter";
-import {
-  RE_MD_EXTERNAL_LINK,
-  RE_MD_INTERNAL_LINK,
-} from "../markdown/markdownLinkShared";
+import { stripMdLinksFromLine } from "../markdown/markdownLinkShared";
 
 const RE_SPAN_ID = /<span\s+id="[^"]*"\s*><\/span>/gi;
 const RE_ATX_PREFIX = /^\s{0,3}#{1,6}\s+/;
@@ -18,9 +15,7 @@ function firstPhysicalLine(rawLine: string): string {
 
 /** 去掉任意位置 MD 内链 / 外链语法（不展开 label） */
 export function stripAllMdInternalLinksFromLine(line: string): string {
-  return line
-    .replace(new RegExp(RE_MD_INTERNAL_LINK.source, "g"), "")
-    .replace(new RegExp(RE_MD_EXTERNAL_LINK.source, "g"), "");
+  return stripMdLinksFromLine(line);
 }
 
 /**

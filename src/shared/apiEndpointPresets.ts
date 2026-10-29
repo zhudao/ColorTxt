@@ -8,6 +8,59 @@ export const DASHSCOPE_WANX_PLATFORM_LABEL = "阿里云通义万相（DashScope�
 export const DASHSCOPE_API_KEY_CONSOLE_URL =
   "https://bailian.console.aliyun.com/cn-beijing/?tab=model#/api-key";
 
+/** Agnes AI 平台显示名（对话、文生图） */
+export const AGNES_PLATFORM_LABEL = "Agnes AI";
+
+/** Agnes OpenAI 兼容 API Base URL */
+export const AGNES_API_BASE_URL = "https://apihub.agnes-ai.com/v1";
+
+/** Agnes 控制台 API 密钥页 */
+export const AGNES_API_KEY_CONSOLE_URL =
+  "https://platform.agnes-ai.com/settings/apiKeys";
+
+/** MiniMax 平台统一品牌名（对话、文生图等；语音朗读 TTS 单独密钥） */
+export const MINIMAX_PLATFORM_LABEL = "MiniMax";
+
+/** MiniMax OpenAI 兼容 API Base URL（中国大陆；对话 / 文生图 / models 共用） */
+export const MINIMAX_API_BASE_URL = "https://api.minimaxi.com/v1";
+
+/** MiniMax 控制台 API 密钥页 */
+export const MINIMAX_API_KEY_CONSOLE_URL =
+  "https://platform.minimaxi.com/user-center/basic-information/interface-key";
+
+/** 小米 MiMo 平台统一品牌名（对话、语音朗读 TTS 等） */
+export const MIMO_PLATFORM_LABEL = "小米 MiMo";
+
+/** 小米 MiMo 官方 OpenAI 兼容 API Base URL（按量付费 `sk-`） */
+export const MIMO_API_BASE_URL = "https://api.xiaomimimo.com/v1";
+
+/**
+ * Token Plan OpenAI 兼容 Base URL（中国集群）。
+ * `tp-` 密钥需走此网关；新加坡 / 欧洲见官方控制台，语音朗读默认中国集群。
+ */
+export const MIMO_TOKEN_PLAN_CN_API_BASE_URL =
+  "https://token-plan-cn.xiaomimimo.com/v1";
+
+/** 小米 MiMo 官方开放平台控制台 */
+export const MIMO_API_KEY_CONSOLE_URL = "https://platform.xiaomimimo.com/";
+
+/** 是否为 Token Plan 专属 API Key（`tp-xxxxx`） */
+export function isMimoTokenPlanApiKey(apiKey: string): boolean {
+  return apiKey.trim().toLowerCase().startsWith("tp-");
+}
+
+/**
+ * 按密钥前缀解析 MiMo OpenAI 兼容 Base URL（去尾斜杠前由调用方再处理亦可）。
+ * - `tp-` → Token Plan 中国集群
+ * - 其余（含 `sk-`）→ 按量付费官方地址
+ */
+export function resolveMimoApiBaseUrlFromApiKey(apiKey: string): string {
+  if (isMimoTokenPlanApiKey(apiKey)) {
+    return MIMO_TOKEN_PLAN_CN_API_BASE_URL;
+  }
+  return MIMO_API_BASE_URL;
+}
+
 /** 对话 API 推荐服务商（OpenAI 兼容 /chat/completions） */
 export type ChatApiProviderPreset = {
   id: string;
@@ -78,6 +131,24 @@ const CHAT_API_PROVIDER_KNOWN_PRESETS: readonly ChatApiProviderPreset[] = [
     deepThinkingAdapted: true,
   },
   {
+    id: "agnes",
+    label: AGNES_PLATFORM_LABEL,
+    baseUrl: AGNES_API_BASE_URL,
+    deepThinkingAdapted: true,
+  },
+  {
+    id: "minimax",
+    label: MINIMAX_PLATFORM_LABEL,
+    baseUrl: MINIMAX_API_BASE_URL,
+    deepThinkingAdapted: true,
+  },
+  {
+    id: "mimo",
+    label: MIMO_PLATFORM_LABEL,
+    baseUrl: MIMO_API_BASE_URL,
+    deepThinkingAdapted: true,
+  },
+  {
     id: "openai",
     label: "OpenAI",
     baseUrl: "https://api.openai.com/v1",
@@ -104,6 +175,52 @@ export const CHAT_API_PROVIDER_PRESETS: readonly ChatApiProviderPreset[] = [
 
 export function normalizeChatPresetBaseUrl(url: string): string {
   return url.trim().replace(/\/+$/, "");
+}
+
+/** 接口地址是否为 Agnes AI 网关 */
+export function agnesApiLikely(baseUrl: string): boolean {
+  const u = normalizeChatPresetBaseUrl(baseUrl).toLowerCase();
+  return u.includes("agnes-ai.com") || u.includes("apihub.agnes");
+}
+
+/** 接口地址是否为 MiniMax 官方 API */
+export function minimaxApiLikely(baseUrl: string): boolean {
+  const u = normalizeChatPresetBaseUrl(baseUrl).toLowerCase();
+  return u.includes("minimaxi.com") || u.includes("minimax.io");
+}
+
+/**
+ * MiniMax 文生图 / 测试连接用 Base URL（应含 `/v1`，与对话一致）。
+ * 兼容旧配置里仅填主机根（如 `https://api.minimaxi.com`）的情况。
+ */
+export function resolveMinimaxImageApiBase(apiBaseUrl: string): string {
+  const custom = normalizeChatPresetBaseUrl(apiBaseUrl);
+  const base = custom || MINIMAX_API_BASE_URL;
+  if (/^https?:\/\/[^/]+$/i.test(base) && minimaxApiLikely(base)) {
+    return `${base}/v1`;
+  }
+  return base;
+}
+
+/** 接口地址是否为小米 MiMo 官方 API */
+export function mimoApiLikely(baseUrl: string): boolean {
+  const u = normalizeChatPresetBaseUrl(baseUrl).toLowerCase();
+  return u.includes("xiaomimimo.com") || u.includes("mimo.mi.com");
+}
+
+/** OpenAI 兼容对话/向量：MiMo 使用 api-key 头，其余默认 Bearer */
+export function applyOpenAiCompatAuthHeaders(
+  headers: Record<string, string>,
+  baseUrl: string,
+  apiKey: string,
+): void {
+  const key = apiKey.trim();
+  if (!key) return;
+  if (mimoApiLikely(baseUrl)) {
+    headers["api-key"] = key;
+    return;
+  }
+  headers.Authorization = `Bearer ${key}`;
 }
 
 export function findChatProviderPresetByBaseUrl(
@@ -153,7 +270,9 @@ export type Txt2ImgBackendPresetId =
   | "a1111"
   | "comfyui"
   | "openai_images"
+  | "agnes_images"
   | "dashscope_wanx"
+  | "minimax_images"
   | "stability"
   | "openai_compat_images";
 
@@ -186,9 +305,19 @@ export const TXT2IMG_BACKEND_PRESETS: readonly Txt2ImgBackendPreset[] = [
     baseUrl: "https://api.openai.com/v1",
   },
   {
+    id: "agnes_images",
+    label: AGNES_PLATFORM_LABEL,
+    baseUrl: AGNES_API_BASE_URL,
+  },
+  {
     id: "dashscope_wanx",
     label: DASHSCOPE_WANX_PLATFORM_LABEL,
     baseUrl: "https://dashscope.aliyuncs.com",
+  },
+  {
+    id: "minimax_images",
+    label: MINIMAX_PLATFORM_LABEL,
+    baseUrl: MINIMAX_API_BASE_URL,
   },
   {
     id: "stability",

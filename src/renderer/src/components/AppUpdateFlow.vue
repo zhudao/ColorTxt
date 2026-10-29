@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import AppModal from "./AppModal.vue";
+import LoadingDotsBounce from "./LoadingDotsBounce.vue";
 import { GITHUB_RELEASES_LATEST_URL } from "../constants/appUi";
 import { formatFileSize } from "../utils/format";
 
@@ -198,7 +199,9 @@ defineExpose({ checkForUpdates });
     :mask-closable="false"
     :esc-closable="false"
   >
-    <p class="updateModalText">正在检查更新…</p>
+    <p class="updateModalText updateModalLoading">
+      正在检查更新<LoadingDotsBounce />
+    </p>
   </AppModal>
 
   <AppModal
@@ -330,6 +333,12 @@ defineExpose({ checkForUpdates });
   font-size: 13px;
   line-height: 1.5;
   color: var(--fg);
+}
+
+.updateModalLoading {
+  display: flex;
+  align-items: center;
+  gap: 0.15em;
 }
 
 .updateModalActions {

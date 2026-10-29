@@ -1,8 +1,11 @@
 <script setup lang="ts">
-import { computed, ref, type ComponentPublicInstance } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { icons } from "../icons";
+import { useAnchoredAppShellMenu } from "../composables/useAnchoredAppShellMenu";
+import AppShellMenuTeleport from "./AppShellMenuTeleport.vue";
 import AppContextMenu from "./AppContextMenu.vue";
-import VirtualList from "./VirtualList.vue";
-import { READER_SIDEBAR_ROW_STRIDE } from "../composables/useReaderSidebarLists";
+
+const BOOKMARKS_HEADER_MORE_MENU_W = 120;
 
 type BookmarkListItem = {
   line: number;
@@ -11,27 +14,98 @@ type BookmarkListItem = {
   chapterTitle?: string;
 };
 
-const props = defineProps<{
-  currentFilePath: string | null;
-  bookmarks: BookmarkListItem[];
-  activeBookmarkLine: number | null;
-}>();
+export type BookmarkListPanelExpose = {
+  scrollToLine: (
+    line: number,
+    opts?: { align?: "auto" | "center"; behavior?: ScrollBehavior },
+  ) => void;
+  openMoreMenu: () => void;
+};
+
+const props = withDefaults(
+  defineProps<{
+    currentFilePath: string | null;
+    bookmarks: BookmarkListItem[];
+    activeBookmarkLine: number | null;
+    menuAnchorEl?: HTMLButtonElement | null;
+  }>(),
+  {
+    currentFilePath: null,
+    menuAnchorEl: null,
+  },
+);
 
 const emit = defineEmits<{
   jumpToBookmark: [line: number];
   clearBookmarks: [];
   editBookmark: [line: number];
   removeBookmark: [line: number];
-  bindListRef: [value: InstanceType<typeof VirtualList> | null];
+  bindListRef: [value: BookmarkListPanelExpose | null];
+  exportBookmarksJson: [];
+  importBookmarksJson: [];
 }>();
 
-function onBindListRef(value: Element | ComponentPublicInstance | null) {
-  if (value && typeof value === "object" && "$el" in value) {
-    emit("bindListRef", value as InstanceType<typeof VirtualList>);
-    return;
-  }
-  emit("bindListRef", null);
+const itemRefs = new Map<number, HTMLElement>();
+
+function setItemRef(line: number, el: unknown) {
+  if (el instanceof HTMLElement) itemRefs.set(line, el);
+  else itemRefs.delete(line);
 }
+
+function scrollToLine(
+  line: number,
+  opts?: { align?: "auto" | "center"; behavior?: ScrollBehavior },
+) {
+  const el = itemRefs.get(line);
+  if (!el) return;
+  el.scrollIntoView({
+    block: opts?.align === "center" ? "center" : "nearest",
+    behavior: opts?.behavior ?? "auto",
+  });
+}
+
+const moreBtnRef = ref<HTMLButtonElement | null>(null);
+const anchorRef = ref<HTMLButtonElement | null>(null);
+watch(
+  () => props.menuAnchorEl ?? moreBtnRef.value,
+  (el) => {
+    anchorRef.value = el;
+  },
+  { immediate: true },
+);
+const moreMenu = useAnchoredAppShellMenu({
+  anchor: anchorRef,
+  placement: "below-end",
+  widthPx: BOOKMARKS_HEADER_MORE_MENU_W,
+  gap: 6,
+  disabled: computed(() => !props.currentFilePath),
+});
+const {
+  open: moreOpen,
+  left: moreLeft,
+  top: moreTop,
+  panelRef: morePanelRef,
+  toggleMenu: toggleMoreMenu,
+  closeMenu: closeMoreMenu,
+} = moreMenu;
+
+function bindMorePanel(el: HTMLElement | null) {
+  morePanelRef.value = el;
+}
+
+defineExpose({
+  scrollToLine,
+  openMoreMenu: toggleMoreMenu,
+  moreOpen,
+});
+
+onMounted(() => {
+  emit("bindListRef", { scrollToLine, openMoreMenu: toggleMoreMenu });
+});
+
+onBeforeUnmount(() => {
+  emit("bindListRef", null);
+});
 
 const sortedBookmarks = computed(() =>
   props.bookmarks.slice().sort((a, b) => a.line - b.line),
@@ -69,6 +143,12 @@ function onContextMenuSelect(actionId: string) {
   if (actionId === "remove") emit("removeBookmark", line);
   closeContextMenu();
 }
+
+function onMoreSelect(action: string) {
+  closeMoreMenu();
+  if (action === "export") emit("exportBookmarksJson");
+  else if (action === "import") emit("importBookmarksJson");
+}
 </script>
 
 <template>
@@ -78,65 +158,51 @@ function onContextMenuSelect(actionId: string) {
         {{ currentFilePath ? "当前文件暂无书签" : "未打开文件" }}
       </div>
       <div v-else class="sidebarListViewportPad">
-        <VirtualList
-          :ref="onBindListRef"
-          class="sidebarList sidebarList--itemGap"
-          :item-count="sortedBookmarks.length"
-          :row-stride="READER_SIDEBAR_ROW_STRIDE * 2"
-          :overscan="8"
-          :item-key="(i) => sortedBookmarks[i]?.line ?? i"
-        >
-          <template #default="{ index }">
-            <button
-              class="bookmarkItem"
-              :class="{
-                active: sortedBookmarks[index].line === activeBookmarkLine,
-              }"
-              @click="onItemClick(sortedBookmarks[index].line)"
-              @contextmenu="
-                onItemContextMenu(sortedBookmarks[index].line, $event)
-              "
-            >
-              <span class="bookmarkMain">
-                <span
-                  v-if="
-                    sortedBookmarks[index].note?.trim() ||
-                    !sortedBookmarks[index].chapterTitle
-                  "
-                  class="bookmarkNote"
-                  :class="{
-                    bookmarkPlaceholder:
-                      !sortedBookmarks[index].note?.trim() &&
-                      !sortedBookmarks[index].chapterTitle,
-                  }"
-                  :title="sortedBookmarks[index].note?.trim() || undefined"
-                >
-                  {{
-                    sortedBookmarks[index].note?.trim() ||
-                    (!sortedBookmarks[index].chapterTitle ? "无备注" : "")
-                  }}
-                </span>
-                <span
-                  v-if="sortedBookmarks[index].chapterTitle"
-                  class="bookmarkChapter"
-                  :title="sortedBookmarks[index].chapterTitle"
-                >
-                  {{ sortedBookmarks[index].chapterTitle }}
-                </span>
-                <span
-                  class="bookmarkContent"
-                  :class="{
-                    bookmarkPlaceholder: !sortedBookmarks[index].content.trim(),
-                  }"
-                  :title="sortedBookmarks[index].content.trim() || undefined"
-                >
-                  {{ sortedBookmarks[index].content.trim() || "（空行）" }}
-                </span>
+        <div class="bookmarkList">
+          <button
+            v-for="item in sortedBookmarks"
+            :key="item.line"
+            :ref="(el) => setItemRef(item.line, el)"
+            class="bookmarkItem"
+            :class="{ active: item.line === activeBookmarkLine }"
+            @click="onItemClick(item.line)"
+            @contextmenu="onItemContextMenu(item.line, $event)"
+          >
+            <span class="bookmarkMain">
+              <span
+                v-if="item.note?.trim() || !item.chapterTitle"
+                class="bookmarkNote"
+                :class="{
+                  bookmarkPlaceholder:
+                    !item.note?.trim() && !item.chapterTitle,
+                }"
+                :title="item.note?.trim() || undefined"
+              >
+                {{
+                  item.note?.trim() ||
+                  (!item.chapterTitle ? "无备注" : "")
+                }}
               </span>
-              <span class="itemMeta">{{ sortedBookmarks[index].line }} 行</span>
-            </button>
-          </template>
-        </VirtualList>
+              <span
+                v-if="item.chapterTitle"
+                class="bookmarkChapter"
+                :title="item.chapterTitle"
+              >
+                {{ item.chapterTitle }}
+              </span>
+              <span
+                class="bookmarkContent"
+                :class="{
+                  bookmarkPlaceholder: !item.content.trim(),
+                }"
+                :title="item.content.trim() || undefined"
+              >
+                {{ item.content.trim() || "（空行）" }}
+              </span>
+            </span>
+            <span class="itemMeta">{{ item.line }} 行</span>
+          </button>
+        </div>
       </div>
     </div>
     <div v-if="sortedBookmarks.length > 0" class="sidebarTabFooter">
@@ -152,6 +218,36 @@ function onContextMenuSelect(actionId: string) {
         清空
       </button>
     </div>
+    <AppShellMenuTeleport
+      v-model:open="moreOpen"
+      :left="moreLeft"
+      :top="moreTop"
+      :width="BOOKMARKS_HEADER_MORE_MENU_W"
+      caret="end"
+      :on-panel-mount="bindMorePanel"
+      aria-label="书签更多"
+    >
+      <button
+        type="button"
+        class="appShellMenuItem"
+        role="menuitem"
+        :disabled="!currentFilePath || sortedBookmarks.length <= 0"
+        @click="onMoreSelect('export')"
+      >
+        <span class="appShellMenuIconSlot" v-html="icons.export" />
+        <span class="appShellMenuLabel">导出书签</span>
+      </button>
+      <button
+        type="button"
+        class="appShellMenuItem"
+        role="menuitem"
+        :disabled="!currentFilePath"
+        @click="onMoreSelect('import')"
+      >
+        <span class="appShellMenuIconSlot" v-html="icons.import" />
+        <span class="appShellMenuLabel">导入书签</span>
+      </button>
+    </AppShellMenuTeleport>
     <Teleport to="body">
       <AppContextMenu
         data-fullscreen-sidebar-float
@@ -187,17 +283,14 @@ function onContextMenuSelect(actionId: string) {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  /* 列表与边缘留白由 .sidebar .virtualList-scroll.sidebarList 的 padding 统一控制 */
-  padding: 0;
+  padding: 6px;
+  box-sizing: border-box;
   background: var(--bg);
+  overflow: auto;
 }
-.sidebarList {
-  flex: 1 1 auto;
-  min-height: 0;
-  min-width: 0;
-}
-.sidebarList--itemGap :deep(.virtualList-row) {
-  padding-bottom: 5px;
+.bookmarkList {
+  display: flex;
+  flex-direction: column;
 }
 .bookmarkItem {
   width: 100%;
@@ -211,6 +304,9 @@ function onContextMenuSelect(actionId: string) {
   display: flex;
   gap: 8px;
   align-items: center;
+}
+.bookmarkItem + .bookmarkItem {
+  margin-top: 5px;
 }
 .bookmarkMain {
   display: flex;

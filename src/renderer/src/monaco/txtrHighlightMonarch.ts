@@ -31,7 +31,7 @@ export function buildTxtrCustomHighlightMonarchRules(
   type Entry = { phrase: string; colorIndex: number; len: number };
   const entries: Entry[] = [];
 
-  for (const [key, words] of Object.entries(opts.highlightWordsByIndex)) {
+  for (const [key, groups] of Object.entries(opts.highlightWordsByIndex)) {
     const idx = Number.parseInt(key, 10);
     if (
       !Number.isFinite(idx) ||
@@ -40,9 +40,11 @@ export function buildTxtrCustomHighlightMonarchRules(
     ) {
       continue;
     }
-    for (const phrase of words) {
-      if (!phrase) continue;
-      entries.push({ phrase, colorIndex: idx, len: phrase.length });
+    for (const group of groups) {
+      for (const phrase of group) {
+        if (!phrase) continue;
+        entries.push({ phrase, colorIndex: idx, len: phrase.length });
+      }
     }
   }
 

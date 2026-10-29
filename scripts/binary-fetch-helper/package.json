@@ -1,0 +1,5 @@
+{
+  "name": "colortxt-binary-fetch-helper",
+  "main": "main.cjs",
+  "private": true
+}

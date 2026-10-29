@@ -13,7 +13,11 @@ export const TXT2IMG_CLOUD_SIZE_REFERENCE = {
 } as const;
 
 export function txt2ImgSupportsCustomSize(backend: AITxt2ImgBackend): boolean {
-  return backend === "a1111" || backend === "comfyui";
+  return (
+    backend === "a1111" ||
+    backend === "comfyui" ||
+    backend === "openai_compat_images"
+  );
 }
 
 export function formatTxt2ImgSizeLabel(width: number, height: number): string {
@@ -48,6 +52,14 @@ const OPENAI_IMAGE_SIZE_PRESETS: readonly Txt2ImgCloudSizePreset[] = [
   { width: 1024, height: 1536 },
 ];
 
+/** Agnes Image 常用固定分辨率（文档示例含 1024×768） */
+const AGNES_IMAGE_SIZE_PRESETS: readonly Txt2ImgCloudSizePreset[] = [
+  { width: 1024, height: 768 },
+  { width: 1024, height: 1024 },
+  { width: 1024, height: 1536 },
+  { width: 1536, height: 1024 },
+];
+
 /** 万相 2.5+ / 2.6 常用固定分辨率（与主进程 high-res 映射一致） */
 const DASHSCOPE_WANX_SIZE_PRESETS: readonly Txt2ImgCloudSizePreset[] = [
   { width: 1280, height: 1280 },
@@ -58,6 +70,15 @@ const DASHSCOPE_WANX_SIZE_PRESETS: readonly Txt2ImgCloudSizePreset[] = [
   { width: 1024, height: 1024 },
   { width: 1280, height: 720 },
   { width: 720, height: 1280 },
+];
+
+/** MiniMax Image：配置宽高用于推导 aspect_ratio，取常用代表像素展示 */
+const MINIMAX_IMAGE_SIZE_PRESETS: readonly Txt2ImgCloudSizePreset[] = [
+  { width: 1024, height: 1024 },
+  { width: 1536, height: 1024 },
+  { width: 1024, height: 1536 },
+  { width: 1472, height: 1104 },
+  { width: 1104, height: 1472 },
 ];
 
 /** Stability：配置宽高用于推导 aspect_ratio，取常用代表像素展示 */
@@ -71,12 +92,13 @@ const STABILITY_SIZE_PRESETS: readonly Txt2ImgCloudSizePreset[] = [
 ];
 
 const CLOUD_SIZE_PRESETS: Record<
-  Exclude<AITxt2ImgBackend, "a1111" | "comfyui">,
+  Exclude<AITxt2ImgBackend, "a1111" | "comfyui" | "openai_compat_images">,
   readonly Txt2ImgCloudSizePreset[]
 > = {
   openai_images: OPENAI_IMAGE_SIZE_PRESETS,
-  openai_compat_images: OPENAI_IMAGE_SIZE_PRESETS,
+  agnes_images: AGNES_IMAGE_SIZE_PRESETS,
   dashscope_wanx: DASHSCOPE_WANX_SIZE_PRESETS,
+  minimax_images: MINIMAX_IMAGE_SIZE_PRESETS,
   stability: STABILITY_SIZE_PRESETS,
 };
 

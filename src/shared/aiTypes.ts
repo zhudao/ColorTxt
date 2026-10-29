@@ -12,6 +12,12 @@ import {
 import type { AITokenUsageTotals } from "./aiTokenUsage";
 import { isTxt2ImgBackend } from "./txt2ImgBackend";
 import { normalizeTxt2ImgCloudQuality } from "./txt2ImgOpenAiQuality";
+import {
+  AI_SYSTEM_PROMPT_PRESET_NONE_ID,
+  type SystemPromptExtraMode,
+} from "./aiSystemPromptPresets";
+
+export type { SystemPromptExtraMode } from "./aiSystemPromptPresets";
 
 export interface AIChatEndpoint {
   baseUrl: string;
@@ -20,10 +26,20 @@ export interface AIChatEndpoint {
   temperature: number;
   maxTokens: number;
   slidingWindowSize: number;
+  /** Agent 单次提问内模型↔工具往返轮数上限 */
+  maxToolRounds: number;
+  /** 附加系统提示词模式：无 / 内置预设 / 自定义 */
+  systemPromptExtraMode: SystemPromptExtraMode;
+  /** 模式为「自定义」时使用的正文；其它模式下仅作草稿保留 */
   systemPromptExtra: string;
   /** 每百万 Token 单价（0 表示未设置，不参与花费估算） */
   tokenPricePerMillion: AITokenPricePerMillion;
 }
+
+/** Agent 工具调用轮数默认上限 */
+export const DEFAULT_MAX_TOOL_ROUNDS = 8;
+export const MAX_TOOL_ROUNDS_MIN = 1;
+export const MAX_TOOL_ROUNDS_MAX = 64;
 
 /** 对话模型每百万 Token 价格 */
 export interface AITokenPricePerMillion {
@@ -59,6 +75,13 @@ export function normalizeTokenPricePerMillion(
 
 export type EmbeddingProvider = "remote" | "builtin";
 
+/** 内置本地嵌入每批条数（固定，不可配置） */
+export const BUILTIN_EMBEDDING_BATCH_SIZE = 20;
+/** 远程 API 嵌入默认每批条数 */
+export const DEFAULT_REMOTE_EMBEDDING_BATCH_SIZE = 10;
+export const REMOTE_EMBEDDING_BATCH_SIZE_MIN = 1;
+export const REMOTE_EMBEDDING_BATCH_SIZE_MAX = 64;
+
 export interface AIEmbeddingEndpoint {
   provider: EmbeddingProvider;
   /** OpenAI 兼容 Base URL；拉模型与嵌入分别派生为 `{baseUrl}/models`、`{baseUrl}/embeddings` */
@@ -66,6 +89,8 @@ export interface AIEmbeddingEndpoint {
   apiKey: string;
   /** 远程 API 嵌入模型名 */
   remoteModel: string;
+  /** 远程 API 单次请求 `input` 条数上限（仅 provider=remote 生效） */
+  remoteEmbedBatchSize: number;
   /** 内置本地模型目录 id（如 bge-small-zh-v1.5） */
   builtinModel: string;
   dimension: number;
@@ -73,6 +98,22 @@ export interface AIEmbeddingEndpoint {
   hfRemoteHost: string;
   /** builtin：模型缓存根目录；空 → userData/ai/model-cache */
   builtinModelCacheDir: string;
+}
+
+/** 按嵌入来源解析建索引 / embed 时使用的批量条数 */
+export function resolveEmbeddingBatchSize(
+  embedding: AIEmbeddingEndpoint,
+): number {
+  if (embedding.provider === "builtin") {
+    return BUILTIN_EMBEDDING_BATCH_SIZE;
+  }
+  return Math.min(
+    REMOTE_EMBEDDING_BATCH_SIZE_MAX,
+    Math.max(
+      REMOTE_EMBEDDING_BATCH_SIZE_MIN,
+      Math.trunc(embedding.remoteEmbedBatchSize),
+    ),
+  );
 }
 
 /** 当前嵌入来源实际使用的模型标识 */
@@ -87,7 +128,9 @@ export type AITxt2ImgBackend =
   | "a1111"
   | "comfyui"
   | "openai_images"
+  | "agnes_images"
   | "dashscope_wanx"
+  | "minimax_images"
   | "stability"
   | "openai_compat_images";
 
@@ -290,9 +333,19 @@ export interface PortraitExtractResult {
   bio_zh: string;
   /** 主要人物关系 */
   relations_zh: string;
-  /** 本轮检索对话模型实际 token 消耗（含重试） */
+  /** 合并用户填写与检索识别后的别名（不含角色名） */
+  aliases: string[];
+  /** 本轮检索对话模型实际 token 消耗（含别名发现，含重试） */
   tokenUsage?: AITokenUsageTotals;
   /** 是否从模型响应解析到 usage */
+  tokenUsageAvailable?: boolean;
+}
+
+/** 角色卡「音色」试听：从正文检索该角色的经典台词 */
+export interface CharacterGoldenQuotesResult {
+  /** 按推荐程度排序的台词原文（适合 TTS 朗读） */
+  quotes: string[];
+  tokenUsage?: AITokenUsageTotals;
   tokenUsageAvailable?: boolean;
 }
 
@@ -378,7 +431,7 @@ export interface AIWordcloudToolResult {
 export const DEFAULT_AI_QUICK_QUESTIONS: readonly string[] = [
   "这章讲了什么",
   "生成人物关系图",
-  "生成角色词云",
+  "生成人名词云",
   "概括本书内容",
 ];
 
@@ -484,7 +537,7 @@ export interface AIAgentStartPayload {
   chatModelOverride?: string;
   /** 默认用配置的 slidingWindowSize */
   slidingWindowSize?: number;
-  /** 默认 8 */
+  /** 默认用配置的 maxToolRounds */
   maxToolRounds?: number;
   /** 已启用技能（用于注册 getSkills 与各 skill_* 工具）；缺省视为空数组 */
   enabledSkills?: AIAgentEnabledSkill[];
@@ -753,6 +806,7 @@ const DEFAULT_EMBEDDING_ENDPOINT: AIEmbeddingEndpoint = {
   baseUrl: DEFAULT_EMBEDDING_REMOTE_BASE_URL,
   apiKey: "",
   remoteModel: "",
+  remoteEmbedBatchSize: DEFAULT_REMOTE_EMBEDDING_BATCH_SIZE,
   builtinModel: DEFAULT_BUILTIN_EMBEDDING_MODEL_ID,
   dimension: 512,
   hfRemoteHost: DEFAULT_HF_REMOTE_HOST,
@@ -774,6 +828,18 @@ export function normalizeEmbeddingEndpoint(
   if (typeof o.baseUrl === "string") d.baseUrl = o.baseUrl;
   if (typeof o.apiKey === "string") d.apiKey = o.apiKey;
   if (typeof o.remoteModel === "string") d.remoteModel = o.remoteModel;
+  if (
+    typeof o.remoteEmbedBatchSize === "number" &&
+    Number.isFinite(o.remoteEmbedBatchSize)
+  ) {
+    d.remoteEmbedBatchSize = Math.min(
+      REMOTE_EMBEDDING_BATCH_SIZE_MAX,
+      Math.max(
+        REMOTE_EMBEDDING_BATCH_SIZE_MIN,
+        Math.trunc(o.remoteEmbedBatchSize),
+      ),
+    );
+  }
   if (typeof o.builtinModel === "string") d.builtinModel = o.builtinModel;
   if (typeof o.dimension === "number" && Number.isFinite(o.dimension)) {
     d.dimension = o.dimension;
@@ -814,7 +880,7 @@ export function normalizeEmbeddingEndpoint(
 export const defaultAIConfig: AIConfig = {
   aiEnabled: true,
   aiDataCacheDir: "",
-  embeddingEnabled: false,
+  embeddingEnabled: true,
   chat: {
     baseUrl: "http://127.0.0.1:1234/v1",
     apiKey: "",
@@ -822,6 +888,8 @@ export const defaultAIConfig: AIConfig = {
     temperature: 0.7,
     maxTokens: 4096,
     slidingWindowSize: 8,
+    maxToolRounds: DEFAULT_MAX_TOOL_ROUNDS,
+    systemPromptExtraMode: AI_SYSTEM_PROMPT_PRESET_NONE_ID,
     systemPromptExtra: "",
     tokenPricePerMillion: { ...EMPTY_TOKEN_PRICE_PER_MILLION },
   },

@@ -2,8 +2,6 @@ import {
   AnnotationType,
   getDocument,
   GlobalWorkerOptions,
-  ImageKind,
-  OPS,
 } from "pdfjs-dist/legacy/build/pdf.mjs";
 import pdfjsWorker from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
 import type { EbookMarkdownArtifacts } from "./ebookTypes";
@@ -26,123 +24,28 @@ import {
 } from "./ebookTocTypes";
 import { chapterTitleForDisplay } from "../../chapter";
 import { plainTextForEbookTitleMatch } from "../ebookTitleMatch";
+import { yieldToUi } from "../yieldToUi";
 import {
   applyLineMutations,
   findLineByFragmentInSpineSection,
   type LineMutation,
 } from "./ebookSpineLineMatch";
+import {
+  allocPdfImageRelPath,
+  buildPdfImageCatalog,
+  configurePdfImageDecoders,
+  decodePdfXObjectImage,
+  type PdfImageCatalog,
+} from "./parsePdfImages";
 
 let workerConfigured = false;
 
-/** 与 package.json 中 pdfjs-dist 版本一致（用于 cMap CDN 路径） */
-const PDFJS_DIST_VERSION = "5.6.205";
-
-type PdfImgLike = {
-  width: number;
-  height: number;
-  kind?: number;
-  data?: Uint8Array | Uint8ClampedArray;
-  bitmap?: ImageBitmap;
-};
-
-function grayscale1bppToImageData(
-  src: Uint8Array,
-  width: number,
-  height: number,
-): ImageData {
-  const out = new Uint8ClampedArray(width * height * 4);
-  const rowBytes = (width + 7) >> 3;
-  let srcPos = 0;
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const byteIdx = x >> 3;
-      const bitIdx = 7 - (x & 7);
-      const b = src[srcPos + byteIdx] ?? 0;
-      const v = (b >> bitIdx) & 1 ? 255 : 0;
-      const j = (y * width + x) * 4;
-      out[j] = out[j + 1] = out[j + 2] = v;
-      out[j + 3] = 255;
-    }
-    srcPos += rowBytes;
-  }
-  return new ImageData(out, width, height);
-}
-
-function pdfRasterToImageData(img: PdfImgLike): ImageData | null {
-  const w = img.width;
-  const h = img.height;
-  if (!w || !h) return null;
-
-  if (img.bitmap) {
-    const canvas = document.createElement("canvas");
-    canvas.width = w;
-    canvas.height = h;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return null;
-    try {
-      ctx.drawImage(img.bitmap, 0, 0);
-      return ctx.getImageData(0, 0, w, h);
-    } finally {
-      img.bitmap.close();
-    }
-  }
-
-  const d = img.data;
-  if (!d || img.kind === undefined) return null;
-
-  if (img.kind === ImageKind.RGBA_32BPP) {
-    const n = w * h * 4;
-    const src =
-      d instanceof Uint8ClampedArray ? d : new Uint8ClampedArray(d.buffer, d.byteOffset, d.byteLength);
-    const copy = new Uint8ClampedArray(n);
-    copy.set(src.subarray(0, n));
-    return new ImageData(copy, w, h);
-  }
-  if (img.kind === ImageKind.RGB_24BPP) {
-    const src = d instanceof Uint8Array ? d : new Uint8Array(d.buffer, d.byteOffset, d.byteLength);
-    const out = new Uint8ClampedArray(w * h * 4);
-    let srcPos = 0;
-    for (let i = 0; i < w * h; i++) {
-      out[i * 4] = src[srcPos++]!;
-      out[i * 4 + 1] = src[srcPos++]!;
-      out[i * 4 + 2] = src[srcPos++]!;
-      out[i * 4 + 3] = 255;
-    }
-    return new ImageData(out, w, h);
-  }
-  if (img.kind === ImageKind.GRAYSCALE_1BPP) {
-    const src = d instanceof Uint8Array ? d : new Uint8Array(d.buffer, d.byteOffset, d.byteLength);
-    return grayscale1bppToImageData(src, w, h);
-  }
-  return null;
-}
-
-function imageDataToPngBuffer(im: ImageData): Promise<ArrayBuffer | null> {
-  const canvas = document.createElement("canvas");
-  canvas.width = im.width;
-  canvas.height = im.height;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return Promise.resolve(null);
-  ctx.putImageData(im, 0, 0);
-  return new Promise((resolve) => {
-    canvas.toBlob(
-      (blob) => {
-        if (!blob) {
-          resolve(null);
-          return;
-        }
-        void blob.arrayBuffer().then(resolve);
-      },
-      "image/png",
-    );
-  });
-}
-
-async function rasterToPngBytes(img: unknown): Promise<ArrayBuffer | null> {
-  if (!img || typeof img !== "object") return null;
-  const im = pdfRasterToImageData(img as PdfImgLike);
-  if (!im) return null;
-  return imageDataToPngBuffer(im);
+/**
+ * 打包进渲染进程的 pdfjs-dist 静态目录（cmaps / wasm 等）。
+ * 相对当前页面，开发态与 `loadFile` 生产页都能命中（勿用根路径 `/pdfjs/`）。
+ */
+function pdfjsBundledAssetUrl(subdir: string): string {
+  return new URL(`pdfjs/${subdir}/`, document.baseURI).href;
 }
 
 /** 行内空白折叠与多余空行压缩（在已含 `\n` 的抽取串上使用）。 */
@@ -856,134 +759,111 @@ async function pdfPagePlainWithLinks(
   return { plain, lineYs };
 }
 
-type ObjsLike = {
-  has: (id: string) => boolean;
-  get: (id: string, cb?: (data: unknown) => void) => unknown;
-};
-
-async function getResolvedObj(objs: ObjsLike, objId: string): Promise<unknown> {
-  try {
-    return objs.get(objId);
-  } catch {
-    return new Promise((resolve) => {
-      objs.get(objId, (data) => resolve(data));
-    });
-  }
-}
-
 type PageLike = {
   getTextContent: (p?: object) => Promise<{ items: unknown[] }>;
   getAnnotations: (p?: object) => Promise<unknown[]>;
-  getOperatorList: (p?: object) => Promise<{
-    fnArray: number[];
-    argsArray: unknown[][];
-  }>;
-  objs: ObjsLike;
+  cleanup?: () => void;
+  ref?: { num: number };
 };
 
-function allocImageRelPath(
-  imagesFolderRel: string,
-  pageIndex: number,
-  seq: number,
-  usedRelKeys: Set<string>,
-): string {
-  const stem = `p${pageIndex}_${seq}`;
-  for (let n = 0; ; n += 1) {
-    const fname = n === 0 ? `${stem}.png` : `${stem}_${n}.png`;
-    const rel = `${imagesFolderRel}/${fname}`;
-    if (!usedRelKeys.has(rel.toLowerCase())) {
-      usedRelKeys.add(rel.toLowerCase());
-      return rel;
-    }
-  }
-}
-
-async function collectPageImages(
-  page: PageLike,
+async function collectPageXObjectImages(
+  catalog: PdfImageCatalog,
+  pageObjNum: number | undefined,
   pageIndex: number,
   imagesFolderRel: string,
   imageWrites: Array<{ relativePath: string; data: ArrayBuffer }>,
   usedRelKeys: Set<string>,
-  objIdToRel: Map<string, string>,
+  objNumToRel: Map<number, string>,
   lines: string[],
 ): Promise<void> {
-  const opList = await page.getOperatorList();
-  const { fnArray, argsArray } = opList;
-  let seq = 0;
-
-  const pushRaster = async (img: unknown) => {
-    const png = await rasterToPngBytes(img);
-    if (!png || png.byteLength === 0) return;
-    const rel = allocImageRelPath(imagesFolderRel, pageIndex, seq, usedRelKeys);
-    seq += 1;
-    imageWrites.push({ relativePath: rel, data: png });
+  if (pageObjNum == null) return;
+  const imgs = catalog.imagesForPageObj(pageObjNum);
+  const seqRef = { n: 0 };
+  const seen = new Set<number>();
+  for (const img of imgs) {
+    if (seen.has(img.objNum)) continue;
+    seen.add(img.objNum);
+    let rel = objNumToRel.get(img.objNum);
+    if (!rel) {
+      const decoded = await decodePdfXObjectImage(img);
+      if (!decoded) continue;
+      rel = allocPdfImageRelPath(
+        imagesFolderRel,
+        pageIndex,
+        seqRef.n,
+        decoded.ext,
+        usedRelKeys,
+      );
+      seqRef.n += 1;
+      objNumToRel.set(img.objNum, rel);
+      imageWrites.push({ relativePath: rel, data: decoded.data });
+    }
     lines.push(formatMdBlockImage(rel));
-  };
-
-  for (let i = 0; i < fnArray.length; i++) {
-    const fn = fnArray[i]!;
-    const args = argsArray[i];
-    if (!args?.length) continue;
-
-    if (fn === OPS.paintInlineImageXObject || fn === OPS.paintImageMaskXObject) {
-      await pushRaster(args[0]);
-      continue;
-    }
-    if (fn === OPS.paintInlineImageXObjectGroup) {
-      await pushRaster(args[0]);
-      continue;
-    }
-    if (fn === OPS.paintImageXObject || fn === OPS.paintImageXObjectRepeat) {
-      const objId = args[0];
-      if (typeof objId !== "string") continue;
-      let rel = objIdToRel.get(objId);
-      if (!rel) {
-        const resolved = await getResolvedObj(page.objs, objId);
-        const png = await rasterToPngBytes(resolved);
-        if (!png || png.byteLength === 0) continue;
-        rel = allocImageRelPath(imagesFolderRel, pageIndex, seq, usedRelKeys);
-        seq += 1;
-        objIdToRel.set(objId, rel);
-        imageWrites.push({ relativePath: rel, data: png });
-      }
-      lines.push(formatMdBlockImage(rel));
-    }
   }
 }
 
 export async function convertPdfToArtifacts(
   buffer: ArrayBuffer,
   outputBase: string,
+  onProgress?: (info: { page: number; pageCount: number }) => void | Promise<void>,
 ): Promise<EbookMarkdownArtifacts> {
   if (!workerConfigured) {
     GlobalWorkerOptions.workerSrc = pdfjsWorker;
     workerConfigured = true;
   }
 
+  configurePdfImageDecoders(pdfjsBundledAssetUrl("wasm"));
+  /** getDocument 会转移 TypedArray，目录解析须用独立副本。 */
+  const pdfBytes = new Uint8Array(buffer);
+  const catalog = await buildPdfImageCatalog(pdfBytes);
+
   const loadingTask = getDocument({
-    data: new Uint8Array(buffer),
-    useSystemFonts: true,
-    cMapUrl: `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_DIST_VERSION}/cmaps/`,
+    data: pdfBytes.slice(),
+    /**
+     * 只抽文本层；插图按 PDF XObject 解码，不跑 getOperatorList。
+     * 缺系统字体时 FontFace pending 会卡住。
+     */
+    disableFontFace: true,
+    useSystemFonts: false,
+    cMapUrl: pdfjsBundledAssetUrl("cmaps"),
     cMapPacked: true,
+    standardFontDataUrl: pdfjsBundledAssetUrl("standard_fonts"),
+    wasmUrl: pdfjsBundledAssetUrl("wasm"),
+    iccUrl: pdfjsBundledAssetUrl("iccs"),
+    /** 主线程拉取同源 CMap/wasm，避免 worker 在 file:// 下 fetch 失败 */
+    useWorkerFetch: false,
   });
   const doc = await loadingTask.promise;
   const lines: string[] = [];
   const imagesFolderRel = `${outputBase}.Images`;
   const imageWrites: Array<{ relativePath: string; data: ArrayBuffer }> = [];
   const usedRelKeys = new Set<string>();
-  const objIdToRel = new Map<string, string>();
+  const objNumToRel = new Map<number, string>();
 
   const docForLinks = doc as unknown as DocLinkResolve;
   const fragments = new EbookMarkdownFragmentRegistry();
   const lineCenterY: number[] = [];
 
   for (let i = 1; i <= doc.numPages; i++) {
+    await onProgress?.({ page: i, pageCount: doc.numPages });
+    await yieldToUi();
     const page = (await doc.getPage(i)) as PageLike;
-    const tc = await page.getTextContent();
-    const anns = await page.getAnnotations();
+    let tcItems: unknown[] = [];
+    let anns: unknown[] = [];
+    try {
+      const tc = await page.getTextContent();
+      tcItems = tc.items;
+    } catch {
+      tcItems = [];
+    }
+    try {
+      anns = await page.getAnnotations();
+    } catch {
+      anns = [];
+    }
     const { plain: pagePlain, lineYs: pageLineYs } = await pdfPagePlainWithLinks(
       docForLinks,
-      tc.items,
+      tcItems,
       anns,
       fragments,
     );
@@ -992,15 +872,20 @@ export async function convertPdfToArtifacts(
       pagePlain.length > 0 ? pagePlain.split("\n") : [""];
 
     const imgLines: string[] = [];
-    await collectPageImages(
-      page,
-      i,
-      imagesFolderRel,
-      imageWrites,
-      usedRelKeys,
-      objIdToRel,
-      imgLines,
-    );
+    try {
+      await collectPageXObjectImages(
+        catalog,
+        page.ref?.num,
+        i,
+        imagesFolderRel,
+        imageWrites,
+        usedRelKeys,
+        objNumToRel,
+        imgLines,
+      );
+    } catch {
+      // 单页抽图失败不挡住正文
+    }
 
     for (let li = 0; li < pageLines.length; li++) {
       const chunk = pageLines[li] ?? "";
@@ -1016,6 +901,11 @@ export async function convertPdfToArtifacts(
       lineCenterY.push(Number.NaN);
       lines.push("");
       lineCenterY.push(Number.NaN);
+    }
+    try {
+      page.cleanup?.();
+    } catch {
+      // 忽略
     }
   }
 

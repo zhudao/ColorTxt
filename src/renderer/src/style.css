@@ -1,6 +1,6 @@
 @font-face {
   font-family: "KingHwa OldSong";
-  src: url("./assets/KingHwa_OldSong1.0.ttf") format("truetype");
+  src: url("./assets/KingHwa_OldSong_3.0.ttf") format("truetype");
   font-weight: normal;
   font-style: normal;
   font-display: swap;
@@ -8,9 +8,19 @@
 
 :root {
   color-scheme: light;
+  --font-family:
+    system-ui,
+    -apple-system,
+    Segoe UI,
+    Roboto,
+    Helvetica,
+    Arial,
+    "Apple Color Emoji",
+    "Segoe UI Emoji";
   --bg: #f8f8f8;
   --panel: #f3f3f3;
   --border: #d4d4d4;
+  --box-shadow: #dddddd 0 4px 2px -2px;
   --fg: #333333;
   /** 可与 --fg 区分用于图标等；默认等同前景色 */
   --fgj: var(--fg);
@@ -18,6 +28,18 @@
   --secondary: #909399;
   --accent: #409eff;
   --accent-hover: #79bbff;
+  /**
+   * 垂直拖条（侧栏 / Monaco Diff sash）共用：宽度、悬停蓝条、延迟与渐变。
+   * 与 monaco-editor sash 默认（4px / 300ms）对齐，颜色跟主题强调色。
+   */
+  --app-sash-size: 4px;
+  --app-sash-hover-size: 4px;
+  --app-sash-hover-delay: 300ms;
+  --app-sash-fade-duration: 0.1s;
+  --app-sash-hover-border: var(--accent);
+  --vscode-sash-size: var(--app-sash-size);
+  --vscode-sash-hover-size: var(--app-sash-hover-size);
+  --vscode-sash-hoverBorder: var(--app-sash-hover-border);
   --btn-bg: #ffffff;
   --control-bg: #ffffff;
   --scrollbar-track: #f3f3f3;
@@ -63,12 +85,34 @@
 
   --input-bg: #ffffff;
 
+  /** 卡片 / 浮层表面 */
+  --surface-elevated: #ffffff;
+
+  /** 找书/发现结果卡片中的书源名 */
+  --book-source: #6d28d9;
+  /** 找书列表 kind 标签底色（比来源名略柔，仍保持一定饱和度） */
+  --book-source-tag: #8b63c9;
+
   /** SwitchToggle 未勾选时轨道背景 */
   --switch-track-off-bg: #dcdfe6;
 
+  /** 编辑书源轻量代码高亮（对齐 legado-E CodeView 色系） */
+  --bs-hl-legado: #e65100;
+  --bs-hl-json: #1565c0;
+  --bs-hl-js-wrap: #78909c;
+  --bs-hl-js-op: #e65100;
+  --bs-hl-js-kw: #039be5;
+
   /* 首帧回退；运行时常量见 constants/readerPalette.ts，由 applyReaderSurfaceToDocument 写入 html */
   --reader-bg: #f4ead7;
+  --reader-body-text: #000000;
   --reader-chapter-title: #b88230;
+  --reader-bg-image: none;
+  --reader-bg-image-opacity: 0;
+  --reader-bg-image-size: cover;
+  --reader-bg-image-position: right top;
+  --reader-bg-image-repeat: no-repeat;
+  --reader-bg-image-blend: normal;
 
   --female: #cc0033;
   --male: #339933;
@@ -80,11 +124,14 @@ html.dark {
   --bg: #181818;
   --panel: #252526;
   --border: #333333;
+  --box-shadow: #000000 0 4px 2px -2px;
   --fg: #d4d4d4;
   --muted: #9da0a4;
   --secondary: #a3a6ad;
   --accent: #409eff;
   --accent-hover: #3375b9;
+  --app-sash-hover-border: var(--accent);
+  --vscode-sash-hoverBorder: var(--app-sash-hover-border);
   --btn-bg: #141414;
   --control-bg: #252526;
   --scrollbar-track: #252526;
@@ -93,7 +140,7 @@ html.dark {
   --tab-fg: rgba(215, 215, 215, 0.7);
   --tab-fg-hover: rgba(215, 215, 215, 1);
   --tab-fg-active: rgba(215, 215, 215, 1);
-  --tab-underline: #0078d4;
+  --tab-underline: #409eff;
   --icon-btn-fg: #cccccc;
   --icon-btn-bg-hover: #2d2e2e;
   --icon-btn-bg-active: #2d2e2e;
@@ -130,9 +177,23 @@ html.dark {
 
   --input-bg: #1e1e1e;
 
+  --surface-elevated: #2d2d2d;
+
+  /** 找书/发现结果卡片中的书源名（暗色背景上提亮） */
+  --book-source: #b6a5fa;
+  /** 找书列表 kind 标签底色 */
+  --book-source-tag: #875fd4;
+
   --switch-track-off-bg: #4c4d4f;
 
+  --bs-hl-legado: #ffb74d;
+  --bs-hl-json: #64b5f6;
+  --bs-hl-js-wrap: #90a4ae;
+  --bs-hl-js-op: #ffb74d;
+  --bs-hl-js-kw: #4fc3f7;
+
   --reader-bg: #1e1e1e;
+  --reader-body-text: #d4d4d4;
   --reader-chapter-title: #569cd6;
 }
 
@@ -143,16 +204,73 @@ body,
   margin: 0;
   background: var(--bg);
   color: var(--fg);
-  font-family:
-    system-ui,
-    -apple-system,
-    Segoe UI,
-    Roboto,
-    Helvetica,
-    Arial,
-    "Apple Color Emoji",
-    "Segoe UI Emoji";
+  font-family: var(--font-family);
   overflow: hidden;
+}
+
+/**
+ * 阅读区底色 + 纹理叠层（仅阅读表面，不作用于书库/文件列表）。
+ * 叠层参数由 `applyReaderBackgroundToDocument` 写入 `--reader-bg-image-*`。
+ * 全屏/极简时外层 `.layout` 已是阅读表面；内层再叠一层会按正文列重算纹理，
+ * 与两侧留白对不齐。内层只透出外层的底色+图。
+ */
+.readerSurfaceBg {
+  position: relative;
+  isolation: isolate;
+  background-color: var(--reader-bg);
+}
+.readerSurfaceBg::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image: var(--reader-bg-image, none);
+  background-repeat: var(--reader-bg-image-repeat, no-repeat);
+  background-size: var(--reader-bg-image-size, cover);
+  background-position: var(--reader-bg-image-position, right top);
+  mix-blend-mode: var(--reader-bg-image-blend, normal);
+  opacity: var(--reader-bg-image-opacity, 0);
+}
+.readerSurfaceBg .readerSurfaceBg {
+  background-color: transparent !important;
+  isolation: auto;
+}
+.readerSurfaceBg .readerSurfaceBg::before {
+  content: none;
+  display: none;
+}
+
+/*
+ * 粘性章节条：实心底色挡住滚动正文，::before 用与阅读表面相同的图并对齐
+ *（`--reader-bg-align-*` 只写在 `.sticky-widget` 上，标题行继承，避免缩放时各行各自算偏移对不齐）。
+ * 标题行也要叠纹理：末行上滑时父级行靠实心底色挡住下层字，不能整条只铺一层图。
+ */
+.readerPane .monaco-editor .sticky-widget::before,
+.readerPane .monaco-editor .sticky-widget .sticky-line-content::before,
+.readerPane .monaco-editor .sticky-widget .sticky-line-number::before {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+  /* 低于标题文字：Monaco 用 position:absolute + top 叠层，勿给 .sticky-line-content 改 position */
+  z-index: -1;
+  width: var(--reader-bg-align-w, 100%);
+  height: var(--reader-bg-align-h, 100%);
+  background-image: var(--reader-bg-image, none);
+  background-repeat: var(--reader-bg-image-repeat, no-repeat);
+  background-size: var(--reader-bg-image-size, cover);
+  background-position: var(--reader-bg-image-position, right top);
+  mix-blend-mode: var(--reader-bg-image-blend, normal);
+  opacity: var(--reader-bg-image-opacity, 0);
+}
+.readerPane .monaco-editor .sticky-widget::before {
+  left: var(--reader-bg-align-x, 0px);
+  top: var(--reader-bg-align-y, 0px);
+}
+.readerPane .monaco-editor .sticky-widget .sticky-line-content::before,
+.readerPane .monaco-editor .sticky-widget .sticky-line-number::before {
+  left: calc(var(--reader-bg-align-x, 0px) - var(--sticky-line-dx, 0px));
+  top: calc(var(--reader-bg-align-y, 0px) - var(--sticky-line-dy, 0px));
 }
 
 /* 滚动条样式 */
@@ -234,7 +352,8 @@ body,
   font-size: 14px;
 }
 
-.btn svg path {
+/* 彩色图标（如色盘）保留 SVG 原色，见 `.btnIconColorful` */
+.btn:not(.btnIconColorful) svg path {
   fill: currentColor;
 }
 
@@ -394,6 +513,20 @@ button.link.danger:not(:disabled):hover {
   transform: rotate(45deg) scale(1) translate(-1px, -1px);
 }
 
+.checkbox input:indeterminate {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.checkbox input:indeterminate::after {
+  width: 8px;
+  height: 2px;
+  border: none;
+  background: #ffffff;
+  border-radius: 1px;
+  transform: scale(1);
+}
+
 /* 键盘样式 */
 code,
 kbd,
@@ -417,6 +550,20 @@ kbd {
 code {
   margin: 0 2px;
   user-select: text;
+}
+
+/* 设置页内联代码片段（提示文案、选项标签等共用） */
+.settingsCode,
+.settingsHint code,
+.aiMasterHint code {
+  display: inline;
+  margin: 0 1px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  background: var(--panel-elevated, rgba(127, 127, 127, 0.12));
+  font-size: 11px;
+  line-height: 1.35;
+  vertical-align: baseline;
 }
 kbd {
   border-radius: 6px;
@@ -494,6 +641,7 @@ textarea:focus {
   border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: 0 12px 36px rgba(0, 0, 0, 0.35);
+  user-select: none;
 }
 
 .appShellMenuDivider {
@@ -507,15 +655,14 @@ textarea:focus {
 .appShellMenuTeleport > .appShellMenuDivider,
 .appShellMenuFlyoutList > .appShellMenuFlyoutDivider,
 .fontMenuList > .fontMenuDivider {
-  margin-block: 2px;
-  margin-inline: 4px;
+  margin: 6px 4px;
 }
 
 .appShellMenuItem {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   padding: 8px 10px;
   border: none;
   border-radius: 6px;
@@ -524,6 +671,7 @@ textarea:focus {
   font-size: 13px;
   text-align: left;
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .appShellMenuItem:hover:not(:disabled, .is-active) {
@@ -768,6 +916,62 @@ textarea:focus {
   white-space: normal;
 }
 
+.appShellMenuItemTags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.appShellMenuItemTag {
+  font-size: 11px;
+  line-height: 1.3;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+.appShellMenuItemTag[data-tone="language"] {
+  background: color-mix(in srgb, #3b82f6 18%, transparent);
+  color: #2563eb;
+}
+
+.appShellMenuItemTag[data-tone="dialect"] {
+  background: color-mix(in srgb, #0d9488 18%, transparent);
+  color: #0f766e;
+}
+
+.appShellMenuItemTag[data-tone="scene"] {
+  background: color-mix(in srgb, #8b5cf6 18%, transparent);
+  color: #7c3aed;
+}
+
+.appShellMenuItemTag[data-tone="capability"] {
+  background: color-mix(in srgb, #f59e0b 18%, transparent);
+  color: #b45309;
+}
+
+.appShellMenuItemTag[data-tone="note"] {
+  background: color-mix(in srgb, var(--muted) 22%, transparent);
+  color: var(--secondary);
+}
+
+html.dark .appShellMenuItemTag[data-tone="language"] {
+  color: #93c5fd;
+}
+
+html.dark .appShellMenuItemTag[data-tone="dialect"] {
+  color: #5eead4;
+}
+
+html.dark .appShellMenuItemTag[data-tone="scene"] {
+  color: #c4b5fd;
+}
+
+html.dark .appShellMenuItemTag[data-tone="capability"] {
+  color: #fcd34d;
+}
+
 .appShellMenuItem--stacked .appShellMenuItemRowBody {
   align-items: flex-start;
 }
@@ -775,6 +979,7 @@ textarea:focus {
 .appShellMenuItem--stacked {
   padding-top: 8px;
   padding-bottom: 8px;
+  white-space: normal;
 }
 
 .appShellMenuGroupLabel {
@@ -816,6 +1021,37 @@ textarea:focus {
   path {
     fill: var(--secondary);
   }
+}
+
+/* 通义音色下拉：性别图标与角色卡性别按钮同色 */
+.voiceReadGenderPrefix {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+}
+
+.voiceReadGenderPrefix svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
+.voiceReadGenderPrefix--male {
+  color: var(--male);
+}
+
+.voiceReadGenderPrefix--female {
+  color: var(--female);
+}
+
+.voiceReadGenderPrefix--unknown {
+  color: var(--muted);
+}
+
+.appShellMenuItemPrefix .voiceReadGenderPrefix svg path {
+  fill: currentColor;
 }
 
 .appShellMenuSubWrap {
@@ -973,8 +1209,7 @@ textarea:focus {
 .appShellMenuIconSlot:not(.appShellMenuIconSlot--github):not(
     .appShellMenuIconSlot--colorful
   )
-  svg
-  path {
+  svg>path {
   fill: currentColor;
 }
 
@@ -985,6 +1220,9 @@ textarea:focus {
 .appShellMenuLabel {
   flex: 1;
   min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .appShellMenuShortcut {
@@ -995,4 +1233,5 @@ textarea:focus {
   font-family:
     ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
     "Courier New", monospace;
+  margin-left: 10px;
 }

@@ -1,0 +1,183 @@
+/* 设置面板各标签页共用布局（AI / 语音朗读 / 角色卡等） */
+
+.settingsBody {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.aiSection {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 16px;
+  background-color: var(--bg);
+  border-radius: 8px;
+}
+
+.aiSection--compact {
+  gap: 12px;
+}
+
+.aiSectionTitle {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.aiMasterToggleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+}
+
+.aiMasterToggleLabel {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+}
+
+.aiMasterHint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.settingsRow {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settingsRowMain {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+}
+
+.settingsRowMain--baseline {
+  align-items: baseline;
+}
+
+/** 下拉触发器较高，与短标签 baseline 对齐会视觉上偏上 */
+.settingsRowMain--baseline {
+  align-items: center;
+}
+
+.settingsLabel {
+  font-size: 14px;
+  color: var(--fg);
+  white-space: nowrap;
+  flex: 1 1 60%;
+}
+
+.settingsLabel.short {
+  flex: 0 0 30%;
+  min-width: 0;
+  max-width: 30%;
+}
+
+.settingsLabel.short.settingsLabel--nested {
+  padding-left: 16px;
+  box-sizing: border-box;
+}
+
+.settingsVoiceBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/** 右侧控件区：下拉、输入框、滑块容器等 */
+.settingsRowField,
+.settingsRowControl {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/** 设置行内下拉：占满标签以外的剩余宽度（勿与 .customSelect 的 flex:1 抢空间） */
+.settingsRowMain .settingsRowControl.customSelect {
+  flex: 1 1 0;
+  min-width: 0;
+  width: auto;
+  max-width: none;
+  align-self: stretch;
+}
+
+.settingsRowField {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.settingsStretchInput,
+.settingsStretchTextarea {
+  width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.settingsStretchTextarea--multiline {
+  font-family: inherit;
+  line-height: 1.45;
+  resize: none;
+}
+
+.settingsHint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.settingsHint a {
+  color: var(--primary);
+  text-decoration: none;
+}
+
+.settingsHint a:hover {
+  color: var(--primary-hover);
+  text-decoration: underline;
+}
+
+.settingsPasswordRow {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  min-width: 0;
+  width: 100%;
+}
+
+.settingsPasswordRow__input {
+  flex: 1;
+  min-width: 0;
+}
+
+/** 设置页 API 密钥行右侧控件区 */
+.aiRowField {
+  flex: 1 1 65%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.aiPasswordRow {
+  width: 100%;
+}
+
+.aiRowField :deep(.apiEndpointInput) {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.settingsActionsRow {
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+}

@@ -1,6 +1,7 @@
 import { reactive } from "vue";
 
 export type AppToastKind =
+  | "none"
   | "success"
   | "warning"
   | "danger"
@@ -15,6 +16,11 @@ export type AppToastItem = {
 };
 
 export type AppToastOptions = {
+  /**
+   * 视觉类型。默认 `none`（无图标，普通前景色）。
+   * 书源 `java.toast` / `java.longToast` 无类型参数，走默认 `none`；
+   * 需要提示语义时须显式传入 `info` / `success` / `warning` / `danger` / `primary`。
+   */
   kind?: AppToastKind;
   /** 为 `true` 时在右侧显示关闭按钮，可提前关闭 */
   showClose?: boolean;
@@ -48,7 +54,7 @@ export function dismissAppToast(id: number): void {
  */
 export function appToast(message: string, options?: AppToastOptions): number {
   const id = ++idSeq;
-  const kind = options?.kind ?? "info";
+  const kind = options?.kind ?? "none";
   const duration = options?.duration ?? DEFAULT_DURATION_MS;
   const showClose = options?.showClose === true;
   appToastItems.push({ id, message, kind, showClose });

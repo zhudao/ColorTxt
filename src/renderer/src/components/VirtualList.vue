@@ -20,17 +20,177 @@ const props = withDefaults(
     scrollPadding?: number;
     /** 稳定 :key，默认使用 index */
     itemKey?: (index: number) => string | number;
+    /**
+     * 外层滚动容器：由该元素的 scrollTop / 视口驱动可见区间，
+     * 本组件只占位 totalHeight，自身不再产生滚动条。
+     */
+    externalScrollEl?: HTMLElement | null;
+    /**
+     * 方向键 / PageUp / PageDown 在本列表移动，焦点留在滚动容器上。
+     * 避免虚拟行销毁后焦点落到 body，快捷键改去滚阅读区。
+     */
+    arrowNav?: boolean;
   }>(),
-  { overscan: 10, scrollPadding: 5 },
+  { overscan: 10, scrollPadding: 5, arrowNav: false },
 );
 
+const emit = defineEmits<{
+  /** 当前虚拟窗下标（含 overscan），供封面等按可见项懒加载 */
+  visibleIndices: [indices: number[]];
+}>();
+
+/** 内置滚动模式时的滚动宿；外层模式时指向占位根（非滚动） */
 const scrollEl = ref<HTMLDivElement | null>(null);
-/** 与 FontPicker 中虚拟列表一致：用 scrollTop 驱动可见区间 */
-const virtualScrollTop = ref(0);
+const listRootEl = ref<HTMLDivElement | null>(null);
+
+/**
+ * 相对列表顶部的滚动偏移（可为负：列表尚未进入视口）。
+ * 内置模式下等同 scrollTop（≥0）。
+ */
+const listScrollOffset = ref(0);
 const listViewportHeight = ref(240);
 
 /** 取消进行中的 rAF 平滑滚动（原生 scrollTo(smooth) 在部分 Electron/WebView 下几乎无动画） */
 let cancelPendingSmoothScroll: (() => void) | null = null;
+
+const useExternalScroll = computed(() => Boolean(props.externalScrollEl));
+
+const arrowNavInstanceId = `vl-${Math.random().toString(36).slice(2, 9)}`;
+const cursorIndex = ref(0);
+
+function isEditableKeyTarget(t: EventTarget | null): boolean {
+  if (!(t instanceof Element)) return false;
+  if (
+    t instanceof HTMLInputElement ||
+    t instanceof HTMLTextAreaElement ||
+    t instanceof HTMLSelectElement
+  ) {
+    return true;
+  }
+  return t instanceof HTMLElement && t.isContentEditable;
+}
+
+function optionId(index: number): string {
+  return `${arrowNavInstanceId}-opt-${index}`;
+}
+
+function clampCursor() {
+  const n = props.itemCount;
+  if (n <= 0) {
+    cursorIndex.value = 0;
+    return;
+  }
+  if (cursorIndex.value > n - 1) cursorIndex.value = n - 1;
+  if (cursorIndex.value < 0) cursorIndex.value = 0;
+}
+
+function syncCursorFromScrollTop(scrollTop: number) {
+  if (!props.arrowNav || props.itemCount <= 0) return;
+  const stride = Math.max(1, props.rowStride);
+  cursorIndex.value = Math.max(
+    0,
+    Math.min(props.itemCount - 1, Math.round(scrollTop / stride)),
+  );
+}
+
+function activateCursorRow() {
+  const id = optionId(cursorIndex.value);
+  const row = listRootEl.value?.querySelector(`#${CSS.escape(id)}`);
+  const btn = row?.querySelector("button");
+  if (btn instanceof HTMLElement) btn.click();
+}
+
+function focusArrowNavHost() {
+  if (!props.arrowNav) return;
+  const ae = document.activeElement;
+  if (isEditableKeyTarget(ae)) return;
+  const host = scrollEl.value;
+  if (!host) return;
+  // 焦点已离开本列表（例如点了阅读区）：不要在 rAF 里抢回来
+  if (
+    ae instanceof HTMLElement &&
+    ae !== host &&
+    !host.contains(ae) &&
+    ae !== document.body &&
+    ae !== document.documentElement
+  ) {
+    return;
+  }
+  host.focus({ preventScroll: true });
+}
+
+function scrollHostByKey(ev: KeyboardEvent): boolean {
+  const el = scrollEl.value;
+  if (!el || useExternalScroll.value) return false;
+  const line = Math.max(1, props.rowStride);
+  const page = Math.max(line, el.clientHeight - line);
+  switch (ev.key) {
+    case "ArrowDown":
+      el.scrollTop += line;
+      return true;
+    case "ArrowUp":
+      el.scrollTop -= line;
+      return true;
+    case "PageDown":
+      el.scrollTop += page;
+      return true;
+    case "PageUp":
+      el.scrollTop -= page;
+      return true;
+    case "Home":
+      el.scrollTop = 0;
+      return true;
+    case "End":
+      el.scrollTop = el.scrollHeight;
+      return true;
+    default:
+      return false;
+  }
+}
+
+function onArrowNavKeydown(ev: KeyboardEvent) {
+  if (!props.arrowNav) return;
+  if (ev.altKey || ev.ctrlKey || ev.metaKey) return;
+  if (isEditableKeyTarget(ev.target)) return;
+  const n = props.itemCount;
+  if (n <= 0) return;
+  if (ev.key === "Enter" || ev.key === " ") {
+    if (ev.target === scrollEl.value) {
+      activateCursorRow();
+      ev.preventDefault();
+      ev.stopPropagation();
+    }
+    return;
+  }
+  const host = scrollEl.value;
+  if (!host) return;
+  // 焦点若还在行按钮上，原生方向键不会滚 overflow 容器；先聚焦再手动滚一行/一页。
+  if (ev.target !== host && host.contains(ev.target as Node)) {
+    focusArrowNavHost();
+    if (scrollHostByKey(ev)) {
+      ev.preventDefault();
+      ev.stopPropagation();
+    }
+  }
+}
+
+function onRowPointerDown(index: number, ev: PointerEvent) {
+  if (!props.arrowNav) return;
+  cursorIndex.value = index;
+  if (isEditableKeyTarget(ev.target)) return;
+}
+
+function onRowClick() {
+  if (!props.arrowNav) return;
+  requestAnimationFrame(focusArrowNavHost);
+}
+
+watch(
+  () => props.itemCount,
+  () => {
+    clampCursor();
+  },
+);
 
 const totalHeight = computed(() =>
   Math.max(0, props.itemCount * props.rowStride),
@@ -39,7 +199,7 @@ const totalHeight = computed(() =>
 const virtualWindow = computed(() => {
   const n = props.itemCount;
   const stride = props.rowStride;
-  const scrollTop = virtualScrollTop.value;
+  const scrollTop = listScrollOffset.value;
   const viewport = Math.max(1, listViewportHeight.value);
   const os = props.overscan ?? 10;
   if (n <= 0) {
@@ -52,27 +212,75 @@ const virtualWindow = computed(() => {
   return { start, end, offsetY: start * stride, indices };
 });
 
-function onScroll(e: Event) {
-  virtualScrollTop.value = (e.target as HTMLElement).scrollTop;
-}
-
 function resolveKey(index: number): string | number {
   return props.itemKey?.(index) ?? index;
 }
 
+function measureListOffsetInHost(host: HTMLElement, root: HTMLElement): number {
+  const hostRect = host.getBoundingClientRect();
+  const rootRect = root.getBoundingClientRect();
+  return rootRect.top - hostRect.top + host.scrollTop;
+}
+
+function syncFromExternal() {
+  const host = props.externalScrollEl;
+  const root = listRootEl.value;
+  if (!host || !root) return;
+  if (host.clientHeight > 0) {
+    listViewportHeight.value = host.clientHeight;
+  }
+  const listOffsetTop = measureListOffsetInHost(host, root);
+  listScrollOffset.value = host.scrollTop - listOffsetTop;
+}
+
+function onInternalScroll(e: Event) {
+  if (useExternalScroll.value) return;
+  const top = (e.target as HTMLElement).scrollTop;
+  listScrollOffset.value = top;
+  syncCursorFromScrollTop(top);
+}
+
+function getScrollHost(): HTMLElement | null {
+  return useExternalScroll.value
+    ? (props.externalScrollEl ?? null)
+    : scrollEl.value;
+}
+
 watchEffect((onCleanup) => {
+  if (useExternalScroll.value) {
+    const host = props.externalScrollEl;
+    if (!host) return;
+
+    const onScroll = () => syncFromExternal();
+    host.addEventListener("scroll", onScroll, { passive: true });
+
+    const ro = new ResizeObserver(() => syncFromExternal());
+    ro.observe(host);
+    for (const child of Array.from(host.children)) {
+      ro.observe(child);
+    }
+    const root = listRootEl.value;
+    if (root) ro.observe(root);
+
+    syncFromExternal();
+    void nextTick(syncFromExternal);
+
+    onCleanup(() => {
+      host.removeEventListener("scroll", onScroll);
+      ro.disconnect();
+    });
+    return;
+  }
+
   const el = scrollEl.value;
   if (!el) return;
   let lastClientH = 0;
   const update = () => {
     const h = el.clientHeight;
-    // 侧栏被 display:none 时高度为 0，保留上次有效高度供 scrollToIndex(center) 计算
     if (h > 0) listViewportHeight.value = h;
-    // 隐藏时 scrollTo 可能未真正写入 el.scrollTop，但 virtualScrollTop 已更新；
-    // 可见后视口仍在顶部，而虚拟窗口按较大 scrollTop 渲染中段行 → 视口内无节点呈空白。
     if (h > 0 && lastClientH === 0) {
-      el.scrollTop = virtualScrollTop.value;
-      virtualScrollTop.value = el.scrollTop;
+      el.scrollTop = Math.max(0, listScrollOffset.value);
+      listScrollOffset.value = el.scrollTop;
     }
     lastClientH = h;
   };
@@ -91,6 +299,10 @@ watch(
   () => props.itemCount,
   (newCount, oldCount) => {
     void nextTick(() => {
+      if (useExternalScroll.value) {
+        syncFromExternal();
+        return;
+      }
       const el = scrollEl.value;
       if (!el) return;
       const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
@@ -98,17 +310,19 @@ watch(
       if (nextTop > maxScroll) {
         nextTop = maxScroll;
       }
-      // 项数变化后须同步 virtualScrollTop，否则窗口仍按旧 scrollTop 渲染错误区段
-      if (oldCount !== newCount || Math.abs(virtualScrollTop.value - nextTop) > 0.5) {
+      if (
+        oldCount !== newCount ||
+        Math.abs(listScrollOffset.value - nextTop) > 0.5
+      ) {
         el.scrollTop = nextTop;
-        virtualScrollTop.value = nextTop;
+        listScrollOffset.value = nextTop;
       }
       if (oldCount !== newCount && el.clientHeight > 0) {
         void nextTick(() => {
           const max2 = Math.max(0, el.scrollHeight - el.clientHeight);
-          const top = Math.min(virtualScrollTop.value, max2);
+          const top = Math.min(Math.max(0, listScrollOffset.value), max2);
           el.scrollTop = top;
-          virtualScrollTop.value = top;
+          listScrollOffset.value = top;
         });
       }
     });
@@ -116,13 +330,21 @@ watch(
 );
 
 function scrollToTop() {
-  const el = scrollEl.value;
-  if (!el) return;
-  el.scrollTop = 0;
-  virtualScrollTop.value = 0;
+  const host = getScrollHost();
+  if (!host) return;
+  if (useExternalScroll.value) {
+    const root = listRootEl.value;
+    if (!root) return;
+    const listOffsetTop = measureListOffsetInHost(host, root);
+    host.scrollTop = Math.max(0, listOffsetTop);
+    syncFromExternal();
+    return;
+  }
+  host.scrollTop = 0;
+  listScrollOffset.value = 0;
 }
 
-/** 滚动容器在 padding 内的可视内容高度，以及真实 maxScrollTop（与侧栏 `.virtualList-scroll` 的 padding 对齐） */
+/** 滚动容器在 padding 内的可视内容高度，以及真实 maxScrollTop */
 function getScrollHostContentViewport(el: HTMLElement) {
   const cs = getComputedStyle(el);
   const padTop = Number.parseFloat(cs.paddingTop) || 0;
@@ -133,37 +355,138 @@ function getScrollHostContentViewport(el: HTMLElement) {
   return { contentH, maxScroll };
 }
 
+function applyScrollTop(
+  nextScrollTop: number,
+  behavior: ScrollBehavior = "auto",
+): Promise<void> {
+  const el = getScrollHost();
+  if (!el) return Promise.resolve();
+  if (Math.abs(nextScrollTop - el.scrollTop) < 0.5) return Promise.resolve();
+
+  if (behavior === "smooth") {
+    cancelPendingSmoothScroll?.();
+
+    const reduceMotion =
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduceMotion) {
+      return applyInstantScrollTop(el, nextScrollTop).then(() => {
+        cancelPendingSmoothScroll = null;
+      });
+    }
+
+    const targetTop = nextScrollTop;
+    const startTop = el.scrollTop;
+    const dist = targetTop - startTop;
+    const durationMs = Math.min(
+      480,
+      Math.max(160, Math.sqrt(Math.abs(dist)) * 14),
+    );
+
+    return new Promise<void>((resolve) => {
+      let cancelled = false;
+      let rafId = 0;
+      const t0 = performance.now();
+
+      const finish = (root: HTMLElement) => {
+        root.scrollTop = targetTop;
+        if (useExternalScroll.value) syncFromExternal();
+        else listScrollOffset.value = targetTop;
+        cancelPendingSmoothScroll = null;
+        resolve();
+      };
+
+      const tick = (now: number) => {
+        if (cancelled) return;
+        const root = getScrollHost();
+        if (!root) {
+          cancelPendingSmoothScroll = null;
+          resolve();
+          return;
+        }
+        const t = Math.min(1, (now - t0) / durationMs);
+        const eased = 1 - (1 - t) * (1 - t);
+        root.scrollTop = startTop + dist * eased;
+        if (useExternalScroll.value) syncFromExternal();
+        else listScrollOffset.value = root.scrollTop;
+        if (t < 1 - 1e-6) {
+          rafId = requestAnimationFrame(tick);
+        } else {
+          finish(root);
+        }
+      };
+
+      cancelPendingSmoothScroll = () => {
+        cancelled = true;
+        cancelAnimationFrame(rafId);
+        cancelPendingSmoothScroll = null;
+        resolve();
+      };
+
+      rafId = requestAnimationFrame(tick);
+    });
+  }
+
+  return applyInstantScrollTop(el, nextScrollTop);
+}
+
+/**
+ * 瞬时滚动：先更新虚拟窗并等 DOM 落地，再写 scrollTop，
+ * 避免一帧内「容器已滚、transform 仍旧」造成文字重影闪烁。
+ */
+async function applyInstantScrollTop(el: HTMLElement, nextScrollTop: number) {
+  if (useExternalScroll.value) {
+    el.scrollTop = nextScrollTop;
+    syncFromExternal();
+    return;
+  }
+  listScrollOffset.value = nextScrollTop;
+  await nextTick();
+  el.scrollTop = nextScrollTop;
+}
+
 /**
  * 将指定下标滚入视口。
  * - center：垂直居中
- * - auto：仅在必要时滚动（与 FontPicker 中选中项滚入逻辑一致）
+ * - auto：仅在必要时滚动
+ * @returns 平滑滚动结束（或即时滚动完成）时 resolve 的 Promise
  */
 function scrollToIndex(
   index: number,
   options?: {
     align?: "center" | "auto";
     behavior?: ScrollBehavior;
-    /** 为 true 时即使 scrollTop 已接近目标也仍写入（章节表整表替换后须强制对齐） */
     force?: boolean;
   },
-) {
-  const el = scrollEl.value;
-  if (!el || props.itemCount <= 0) return;
+): Promise<void> {
+  const el = getScrollHost();
+  if (!el || props.itemCount <= 0) return Promise.resolve();
   const stride = props.rowStride;
   const n = props.itemCount;
   const idx = Math.max(0, Math.min(Math.floor(index), n - 1));
-  const itemTop = idx * stride;
-  const itemBottom = itemTop + stride;
+  const itemTopInList = idx * stride;
+  const itemBottomInList = itemTopInList + stride;
   const padding = props.scrollPadding ?? 5;
   const align = options?.align ?? "auto";
   const behavior = options?.behavior ?? "auto";
 
+  let listOffsetTop = 0;
+  if (useExternalScroll.value) {
+    const root = listRootEl.value;
+    if (!root) return Promise.resolve();
+    listOffsetTop = measureListOffsetInHost(el, root);
+  }
+
+  const itemTop = listOffsetTop + itemTopInList;
+  const itemBottom = listOffsetTop + itemBottomInList;
+
   let nextScrollTop = el.scrollTop;
   const { contentH, maxScroll: domMaxScroll } = getScrollHostContentViewport(el);
-  const expectedInner = n * stride;
-  // 项数刚变时 scrollHeight 可能仍为旧值；force 时用理论高度避免 clamp 错位
+  const expectedInner = useExternalScroll.value
+    ? el.scrollHeight
+    : n * stride;
   let maxScroll = domMaxScroll;
-  if (options?.force && el.scrollHeight + 4 < expectedInner) {
+  if (options?.force && !useExternalScroll.value && el.scrollHeight + 4 < expectedInner) {
     maxScroll = Math.max(0, expectedInner - contentH);
   }
 
@@ -172,7 +495,6 @@ function scrollToIndex(
     if (el.clientHeight <= 0) {
       viewH = Math.max(1, listViewportHeight.value);
     }
-    // 行块几何中心对齐到 padding 内可视区中心（避免把 padding 算进视高导致「居中」偏上/偏下）
     nextScrollTop = itemTop + stride / 2 - viewH / 2;
     nextScrollTop = Math.max(0, Math.min(nextScrollTop, maxScroll));
   } else {
@@ -187,82 +509,48 @@ function scrollToIndex(
   }
 
   if (!options?.force && Math.abs(nextScrollTop - el.scrollTop) < 0.5) {
-    return;
+    return Promise.resolve();
   }
 
-  if (behavior === "smooth") {
-    cancelPendingSmoothScroll?.();
-
-    const reduceMotion =
-      typeof window.matchMedia === "function" &&
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduceMotion) {
-      el.scrollTop = nextScrollTop;
-      virtualScrollTop.value = nextScrollTop;
-      cancelPendingSmoothScroll = null;
-      return;
-    }
-
-    const targetTop = nextScrollTop;
-    const startTop = el.scrollTop;
-    const dist = targetTop - startTop;
-    const durationMs = Math.min(
-      480,
-      Math.max(160, Math.sqrt(Math.abs(dist)) * 14),
-    );
-
-    let cancelled = false;
-    let rafId = 0;
-    const t0 = performance.now();
-
-    const finish = (root: HTMLElement) => {
-      root.scrollTop = targetTop;
-      virtualScrollTop.value = targetTop;
-      cancelPendingSmoothScroll = null;
-    };
-
-    const tick = (now: number) => {
-      if (cancelled) return;
-      const root = scrollEl.value;
-      if (!root) {
-        cancelPendingSmoothScroll = null;
-        return;
-      }
-      const t = Math.min(1, (now - t0) / durationMs);
-      const eased = 1 - (1 - t) * (1 - t);
-      root.scrollTop = startTop + dist * eased;
-      virtualScrollTop.value = root.scrollTop;
-      if (t < 1 - 1e-6) {
-        rafId = requestAnimationFrame(tick);
-      } else {
-        finish(root);
-      }
-    };
-
-    cancelPendingSmoothScroll = () => {
-      cancelled = true;
-      cancelAnimationFrame(rafId);
-    };
-
-    rafId = requestAnimationFrame(tick);
-    return;
-  }
-
-  // 程序化对齐须直接写入 scrollTop；scrollTo 在部分 WebView 下可能延迟，随后 onScroll 用旧值覆盖 virtualScrollTop
-  el.scrollTop = nextScrollTop;
-  virtualScrollTop.value = nextScrollTop;
+  return applyScrollTop(nextScrollTop, behavior);
 }
+
+watch(
+  () => virtualWindow.value.indices,
+  (indices) => {
+    emit("visibleIndices", indices.slice());
+  },
+  { immediate: true },
+);
 
 defineExpose({
   scrollToIndex,
   scrollToTop,
   scrollEl,
+  syncFromExternal,
+  /** 当前虚拟窗下标（含 overscan） */
+  getVisibleIndices: () => virtualWindow.value.indices.slice(),
 });
 </script>
 
 <template>
-  <div ref="scrollEl" class="virtualList-scroll" @scroll="onScroll">
+  <div
+    ref="scrollEl"
+    class="virtualList-scroll"
+    :class="{
+      'virtualList-scroll--external': useExternalScroll,
+      'virtualList-scroll--arrowNav': arrowNav,
+    }"
+    :tabindex="arrowNav && itemCount > 0 ? 0 : undefined"
+    :role="arrowNav ? 'listbox' : undefined"
+    :aria-activedescendant="
+      arrowNav && itemCount > 0 ? optionId(cursorIndex) : undefined
+    "
+    @scroll="onInternalScroll"
+    @keydown="onArrowNavKeydown"
+  >
     <div
+      ref="listRootEl"
       class="virtualList-root"
       :style="{ height: `${totalHeight}px` }"
     >
@@ -272,9 +560,15 @@ defineExpose({
       >
         <div
           v-for="index in virtualWindow.indices"
+          :id="arrowNav ? optionId(index) : undefined"
           :key="resolveKey(index)"
           class="virtualList-row"
+          :class="{ 'virtualList-row--cursor': arrowNav && index === cursorIndex }"
           :style="{ height: `${rowStride}px` }"
+          :role="arrowNav ? 'option' : undefined"
+          :aria-selected="arrowNav ? index === cursorIndex : undefined"
+          @pointerdown="onRowPointerDown(index, $event)"
+          @click="onRowClick"
         >
           <slot :index="index" />
         </div>
@@ -291,6 +585,12 @@ defineExpose({
   width: 100%;
 }
 
+.virtualList-scroll--external {
+  overflow: hidden;
+  flex: none;
+  min-height: 0;
+}
+
 .virtualList-root {
   position: relative;
   width: 100%;
@@ -303,12 +603,21 @@ defineExpose({
   top: 0;
   display: flex;
   flex-direction: column;
-  will-change: transform;
 }
 
 .virtualList-row {
   flex-shrink: 0;
   box-sizing: border-box;
+}
+
+.virtualList-scroll--arrowNav:focus,
+.virtualList-scroll--arrowNav:focus-visible {
+  outline: none;
+}
+
+.virtualList-scroll--arrowNav :deep(button:focus),
+.virtualList-scroll--arrowNav :deep(button:focus-visible) {
+  outline: none;
 }
 
 .virtualList-row > :deep(*) {

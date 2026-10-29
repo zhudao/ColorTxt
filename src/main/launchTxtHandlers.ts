@@ -1,12 +1,17 @@
-import { app, BrowserWindow } from "electron";
+import { app } from "electron";
 import { existsSync, statSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import type { CreateMainWindow } from "./windowFactory";
 import { isSupportedShellOpenPath } from "../shared/ebookExtensions";
+import { openTxtInMainWindow } from "./openTxtInMainWindow";
 
 type SetupLaunchTxtHandlersOptions = {
   createWindow: CreateMainWindow;
+  findBookWindowByWindowId: Map<number, boolean>;
+  mainWindowFocusState: { lastId: number | null };
+  /** 返回 true 表示已处理（跳过默认「开主窗 / 开 txt」） */
+  onSecondInstance?: (argv: string[]) => boolean;
 };
 
 type LaunchTxtHandlerApi = {
@@ -32,7 +37,12 @@ function getTxtPathFromArgv(argv: string[]): string | null {
 export function setupLaunchTxtHandlers(
   options: SetupLaunchTxtHandlersOptions,
 ): LaunchTxtHandlerApi {
-  const { createWindow } = options;
+  const {
+    createWindow,
+    findBookWindowByWindowId,
+    mainWindowFocusState,
+    onSecondInstance,
+  } = options;
   const macPendingTxtPaths: string[] = [];
 
   async function focusAndOpenTxtPath(filePath: string) {
@@ -44,18 +54,13 @@ export function setupLaunchTxtHandlers(
       return;
     }
 
-    let win = BrowserWindow.getFocusedWindow();
-    if (!win) {
-      const all = BrowserWindow.getAllWindows();
-      win = all[0] ?? undefined;
-    }
-    if (win && !win.isDestroyed()) {
-      win.focus();
-      win.webContents.send("app:open-txt-path", resolved);
-      return;
-    }
-
-    createWindow({ openTxtPath: resolved });
+    // 始终路由到主阅读窗口（排除找书窗）；无主窗则新建
+    openTxtInMainWindow({
+      filePath: resolved,
+      createWindow,
+      findBookWindowByWindowId,
+      mainWindowFocusState,
+    });
   }
 
   const gotSingleInstanceLock = app.requestSingleInstanceLock();
@@ -63,6 +68,10 @@ export function setupLaunchTxtHandlers(
     app.quit();
   } else {
     app.on("second-instance", (_event, argv) => {
+      if (onSecondInstance?.(argv)) {
+        app.focus({ steal: true });
+        return;
+      }
       const fromArgv = getTxtPathFromArgv(argv);
       if (fromArgv) {
         void focusAndOpenTxtPath(fromArgv);

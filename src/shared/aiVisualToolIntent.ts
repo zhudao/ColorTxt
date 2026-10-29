@@ -51,6 +51,6 @@ export function resolveVisualToolInjectHintsForTurn(opts: {
     return { mindmapInjectHint, wordcloudInjectHint };
   }
 
-  /** 默认互斥：用户提到词云时优先词云，避免「生成角色词云」等同时触发人物类思维导图 */
+  /** 默认互斥：用户提到词云时优先词云，避免「生成人名词云」等同时触发人物类思维导图 */
   return { mindmapInjectHint: null, wordcloudInjectHint };
 }

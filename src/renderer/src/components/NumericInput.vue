@@ -60,8 +60,8 @@ function commit(e: Event) {
 
 <style scoped>
 .numericInput {
-  width: 88px;
-  flex-shrink: 0;
+  width: 120px;
+  flex: 0 0 120px;
   padding: 6px 10px;
   border-radius: 6px;
   font-size: 14px;

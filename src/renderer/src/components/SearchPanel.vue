@@ -1,7 +1,13 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
+import { icons } from "../icons";
+import { useAnchoredAppShellMenu } from "../composables/useAnchoredAppShellMenu";
+import { appToast } from "../services/appToast";
 import VirtualList from "./VirtualList.vue";
+import AppShellMenuTeleport from "./AppShellMenuTeleport.vue";
 import { READER_SIDEBAR_ROW_STRIDE } from "../composables/useReaderSidebarLists";
+
+const SEARCH_HEADER_MORE_MENU_W = 160;
 
 type SearchRange = { start: number; end: number };
 type SearchResultItem = {
@@ -9,6 +15,7 @@ type SearchResultItem = {
   displayLine: number;
   text: string;
   range: SearchRange;
+  physicalStartColumn: number;
 };
 
 const props = withDefaults(
@@ -21,7 +28,9 @@ const props = withDefaults(
     matchCase?: boolean;
     wholeWord?: boolean;
     useRegex?: boolean;
-    activeSearchResult?: { physicalLine: number; rangeStart: number } | null;
+    activeSearchResult?: { displayLine: number; rangeStart: number } | null;
+    /** 侧栏标题行「更多」按钮（锚定菜单） */
+    menuAnchorEl?: HTMLButtonElement | null;
   }>(),
   {
     loading: false,
@@ -30,16 +39,17 @@ const props = withDefaults(
     wholeWord: false,
     useRegex: false,
     activeSearchResult: null,
+    menuAnchorEl: null,
   },
 );
 
 function isActiveSearchResult(
   item: SearchResultItem,
-  active: { physicalLine: number; rangeStart: number } | null | undefined,
+  active: { displayLine: number; rangeStart: number } | null | undefined,
 ): boolean {
   if (!active) return false;
   return (
-    item.physicalLine === active.physicalLine &&
+    item.displayLine === active.displayLine &&
     item.range.start === active.rangeStart
   );
 }
@@ -52,15 +62,89 @@ const emit = defineEmits<{
   jumpToResult: [item: SearchResultItem];
 }>();
 
+const moreBtnRef = ref<HTMLButtonElement | null>(null);
+const moreAnchorRef = ref<HTMLButtonElement | null>(null);
+watch(
+  () => props.menuAnchorEl ?? moreBtnRef.value,
+  (el) => {
+    moreAnchorRef.value = el;
+  },
+  { immediate: true },
+);
+const moreMenu = useAnchoredAppShellMenu({
+  anchor: moreAnchorRef,
+  placement: "below-end",
+  widthPx: SEARCH_HEADER_MORE_MENU_W,
+  gap: 6,
+});
+const {
+  open: moreOpen,
+  left: moreLeft,
+  top: moreTop,
+  panelRef: morePanelRef,
+  toggleMenu: toggleMoreMenu,
+  closeMenu: closeMoreMenu,
+} = moreMenu;
+
+function bindMorePanel(el: HTMLElement | null) {
+  morePanelRef.value = el;
+}
+
+const copyResultsDisabled = computed(
+  () =>
+    !props.currentFilePath ||
+    !props.query.trim() ||
+    props.results.length === 0 ||
+    props.loading,
+);
+
+function formatSearchResultsCopyText(withLineCol: boolean): string {
+  const path = props.currentFilePath ?? "";
+  const query = props.query.trim();
+  const lines = props.results.map((item) => {
+    const content = linePreview(item.text);
+    if (!withLineCol) return `  ${content}`;
+    const col = Math.max(1, item.physicalStartColumn);
+    return `  ${item.physicalLine},${col}: ${content}`;
+  });
+  return [`路径：${path}`, `搜索：${query}`, "结果：", ...lines].join("\n");
+}
+
+async function onCopyResults(withLineCol: boolean) {
+  closeMoreMenu();
+  if (copyResultsDisabled.value) {
+    appToast("没有可复制的搜索结果", { kind: "info" });
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(formatSearchResultsCopyText(withLineCol));
+    appToast(withLineCol ? "已复制（带行列号）" : "已复制", {
+      kind: "success",
+      duration: 1200,
+    });
+  } catch {
+    appToast("复制失败", { kind: "warning" });
+  }
+}
+
 const searchInputRef = ref<HTMLInputElement | null>(null);
 
 function focusSearchInput() {
   void nextTick(() => {
     requestAnimationFrame(() => {
-      searchInputRef.value?.focus();
+      const el = searchInputRef.value;
+      if (!el) return;
+      el.focus();
+      el.select();
     });
   });
 }
+
+defineExpose({
+  openMoreMenu: toggleMoreMenu,
+  moreOpen,
+  focusSearchInput,
+});
 
 watch(
   () => props.active,
@@ -186,11 +270,12 @@ function buildSegmentsByRanges(text: string, ranges: SearchRange[]) {
           :item-count="props.results.length"
           :row-stride="READER_SIDEBAR_ROW_STRIDE"
           :overscan="12"
+          arrow-nav
           :item-key="
             (i) => {
               const r = props.results[i];
               return r
-                ? `${r.physicalLine}-${r.range.start}-${r.range.end}`
+                ? `${r.displayLine}-${r.range.start}-${r.range.end}`
                 : String(i);
             }
           "
@@ -198,6 +283,7 @@ function buildSegmentsByRanges(text: string, ranges: SearchRange[]) {
           <template #default="{ index }">
             <button
               type="button"
+              tabindex="-1"
               class="searchResultItem"
               :class="{
                 active: isActiveSearchResult(
@@ -225,7 +311,7 @@ function buildSegmentsByRanges(text: string, ranges: SearchRange[]) {
                   <span v-else>{{ segment.text }}</span>
                 </template>
               </span>
-              <span class="searchResultLine">{{ props.results[index].physicalLine }} 行</span>
+              <span class="searchResultLine">{{ props.results[index].displayLine }} 行</span>
             </button>
           </template>
         </VirtualList>
@@ -234,6 +320,36 @@ function buildSegmentsByRanges(text: string, ranges: SearchRange[]) {
     <div v-if="props.query.trim()" class="sidebarTabFooter">
       <span class="sidebarTabFooterStat">共 {{ props.results.length }} 个结果</span>
     </div>
+    <AppShellMenuTeleport
+      v-model:open="moreOpen"
+      :left="moreLeft"
+      :top="moreTop"
+      :width="SEARCH_HEADER_MORE_MENU_W"
+      caret="end"
+      :on-panel-mount="bindMorePanel"
+      aria-label="搜索更多"
+    >
+      <button
+        type="button"
+        class="appShellMenuItem"
+        role="menuitem"
+        :disabled="copyResultsDisabled"
+        @click="onCopyResults(false)"
+      >
+        <span class="appShellMenuIconSlot" v-html="icons.copy" />
+        <span class="appShellMenuLabel">复制</span>
+      </button>
+      <button
+        type="button"
+        class="appShellMenuItem"
+        role="menuitem"
+        :disabled="copyResultsDisabled"
+        @click="onCopyResults(true)"
+      >
+        <span class="appShellMenuIconSlot" v-html="icons.copy" />
+        <span class="appShellMenuLabel">复制（带行列号）</span>
+      </button>
+    </AppShellMenuTeleport>
   </div>
 </template>
 

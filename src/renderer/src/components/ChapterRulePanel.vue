@@ -287,6 +287,7 @@ function moveRule(fromIndex: number, toIndex: number) {
                   />
                   <IconButton
                     v-if="!item.rule.builtIn"
+                    danger
                     :icon-html="icons.remove"
                     aria-label="移除"
                     title="移除"

@@ -108,6 +108,10 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
 export async function convertBookBufferToArtifacts(
   absSource: string,
   buffer: ArrayBuffer,
+  onPdfProgress?: (info: {
+    page: number;
+    pageCount: number;
+  }) => void | Promise<void>,
 ): Promise<EbookMarkdownArtifacts> {
   const lower = absSource.toLowerCase();
   const outputBase = ebookSourceFileBaseForOutput(absSource);
@@ -135,7 +139,7 @@ export async function convertBookBufferToArtifacts(
     return convertFb2ToArtifacts(buffer, true, outputBase);
   }
   if (lower.endsWith(".pdf")) {
-    return convertPdfToArtifacts(buffer, outputBase);
+    return convertPdfToArtifacts(buffer, outputBase, onPdfProgress);
   }
   if (lower.endsWith(".chm")) {
     return convertChmToArtifacts(buffer, outputBase);
@@ -153,7 +157,7 @@ function joinUnderDir(dirAbs: string, relativePosix: string): string {
 }
 
 /** `{basename}.md` 旁为 `{basename}.Images/` */
-function imagesDirAbsBesideConvertedMd(convertedMdPath: string): string {
+export function imagesDirAbsBesideConvertedMd(convertedMdPath: string): string {
   const mdNorm = convertedMdPath.replace(/\\/g, "/").trim();
   const dir = dirnameFs(mdNorm);
   const file =
@@ -198,6 +202,10 @@ export async function ensureEbookMarkdown(params: {
   /** 跳过缓存命中，强制重新解析并覆盖转换结果 */
   forceConvert?: boolean;
   onActualConversionStart?: () => void | Promise<void>;
+  onPdfProgress?: (info: {
+    page: number;
+    pageCount: number;
+  }) => void | Promise<void>;
 }): Promise<{ convertedMdPath: string; didConvert: boolean }> {
   const absSource = params.sourceBookPath.trim();
   if (!isEbookFilePath(absSource)) {
@@ -251,7 +259,11 @@ export async function ensureEbookMarkdown(params: {
   }
   await yieldToUi();
   const buf = await readBookAsArrayBuffer(absSource);
-  const artifacts = await convertBookBufferToArtifacts(absSource, buf);
+  const artifacts = await convertBookBufferToArtifacts(
+    absSource,
+    buf,
+    params.onPdfProgress,
+  );
   await writeEbookConversionArtifacts({ convertedMdPath, artifacts });
   return { convertedMdPath, didConvert: true };
 }

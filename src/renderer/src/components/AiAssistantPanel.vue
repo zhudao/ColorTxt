@@ -20,6 +20,7 @@ import {
   type AITokenPricePerMillion,
 } from "@shared/aiTypes";
 import { readActiveChatEndpoint } from "@shared/aiEndpointProfiles";
+import { sortChatModelsForBaseUrl } from "@shared/chatModelPresets";
 import type { AiCustomSkill, AiSkillUserOverride } from "@shared/aiSkills";
 import { collectEnabledAgentSkills } from "@shared/aiSkills";
 import {
@@ -71,10 +72,11 @@ import AppCustomSelect, { type CustomSelectItem } from "./AppCustomSelect.vue";
 import { icons } from "../icons";
 import { appAlert } from "../services/appDialog";
 import { appToast } from "../services/appToast";
+import { syncDismissibleOverlay } from "../utils/dismissibleOverlayStack";
 import { APP_DISPLAY_NAME } from "../constants/appUi";
 
 /** 导出对话下拉菜单固定宽度（与内容版式一致，不作视口/触发器推算） */
-const AI_EXPORT_MENU_WIDTH_PX = 210;
+const AI_EXPORT_MENU_WIDTH_PX = 240;
 
 const selectListsEmpty: CustomSelectItem[] = [];
 
@@ -321,6 +323,11 @@ watch(
   { immediate: true },
 );
 
+const aiAssistantTeleportMenusOpen = computed(
+  () => historyOpen.value || exportMenuOpen.value,
+);
+syncDismissibleOverlay(aiAssistantTeleportMenusOpen);
+
 const composerInputRef =
   useTemplateRef<HTMLTextAreaElement>("composerInputRef");
 const threadTitleInputRef = useTemplateRef<HTMLInputElement>(
@@ -562,13 +569,11 @@ async function refreshChatModels(opts?: { composerSuccessFlash?: boolean }) {
     });
     ok = r.ok;
     if (r.ok) {
-      chatModelOptions.value = r.models;
+      chatModelOptions.value = sortChatModelsForBaseUrl(chat.baseUrl, r.models);
       chatModelsListFingerprint.value = fp;
-      if (r.models.length > 0) {
-        const cur = activeChatModel.value.trim();
-        if (!cur || !r.models.includes(cur)) {
-          activeChatModel.value = r.models[0]!;
-        }
+      // 已选手输模型不在列表里时保留，避免侧栏一拉取就把设置里的模型 ID 换成列表第一项
+      if (chatModelOptions.value.length > 0 && !activeChatModel.value.trim()) {
+        activeChatModel.value = chatModelOptions.value[0]!;
       }
     } else {
       chatModelOptions.value = [];
@@ -681,9 +686,54 @@ async function maybeRenameThreadFromFirstExchange(tid: string) {
   await loadThreadList();
 }
 
-async function loadMessagesForThread(tid: string) {
+/**
+ * 从 DB 拉取并展示消息。
+ * `reuseAssistantId`：Agent 正常结束后整表刷新时，复用流式占位助手气泡的 id，
+ * 避免 Vue 因 key 变化销毁/重建思维导图、词云等子树（大图弹层会因此被关掉）。
+ */
+async function loadMessagesForThread(
+  tid: string,
+  opts?: { reuseAssistantId?: string },
+) {
   const rows = await window.colorTxt.ai.messageList(tid);
-  messages.value = rowsToUiMessages(rows);
+  const next = rowsToUiMessages(rows);
+  const reuseId = opts?.reuseAssistantId?.trim();
+  if (reuseId) {
+    const prevAsst = [...messages.value]
+      .reverse()
+      .find((m) => m.role === "assistant" && m.id === reuseId);
+    for (let i = next.length - 1; i >= 0; i--) {
+      const m = next[i];
+      if (m?.role !== "assistant") continue;
+      m.id = reuseId;
+      if (prevAsst?.role === "assistant") {
+        for (const nt of m.tools) {
+          const pt = prevAsst.tools.find((t) => t.toolCallId === nt.toolCallId);
+          if (!pt) continue;
+          if (
+            pt.mindmap &&
+            nt.mindmap &&
+            pt.mindmap.markdown === nt.mindmap.markdown &&
+            pt.mindmap.title === nt.mindmap.title
+          ) {
+            nt.mindmap = pt.mindmap;
+          }
+          if (
+            pt.wordcloud &&
+            nt.wordcloud &&
+            pt.wordcloud.title === nt.wordcloud.title &&
+            pt.wordcloud.mode === nt.wordcloud.mode &&
+            (pt.wordcloud.layoutSeed ?? 0) === (nt.wordcloud.layoutSeed ?? 0) &&
+            pt.wordcloud.words.length === nt.wordcloud.words.length
+          ) {
+            nt.wordcloud = pt.wordcloud;
+          }
+        }
+      }
+      break;
+    }
+  }
+  messages.value = next;
   await scrollListToBottomAfterMessagesLoad();
 }
 
@@ -768,6 +818,7 @@ watch(
         void refreshChatModels();
       }
       await nextTick();
+      autosizeComposerInput();
       flushPendingScrollToBottomAfterVisible();
       focusComposer();
     })();
@@ -998,11 +1049,16 @@ onMounted(() => {
         /** 多轮 tool 之间模型常在 assistant.content 里重复输出草稿；清空以免叠在同一条气泡里 */
         liveAssistant.answer = "";
         break;
-      case "done":
+      case "done": {
         streaming.value = false;
         chatAwaitingReply.value = false;
         currentTurnAbort.value = null;
         awaitingAgentDone.value = false;
+        /** 须在清 agentLive 前记下占位 id，供整表刷新时复用，保住思维导图大图等本地 UI 状态 */
+        const reuseAssistantId =
+          liveAssistant?.id.startsWith("pending_") === true
+            ? liveAssistant.id
+            : undefined;
         if (liveAssistant) {
           liveAssistant.agentLive = false;
           finalizeLiveThinkingAfterStop(liveAssistant);
@@ -1029,11 +1085,12 @@ onMounted(() => {
         void (async () => {
           const tid = threadId.value;
           if (tid) {
-            await loadMessagesForThread(tid);
+            await loadMessagesForThread(tid, { reuseAssistantId });
             await maybeRenameThreadFromFirstExchange(tid);
           }
         })();
         break;
+      }
       case "error":
         streaming.value = false;
         chatAwaitingReply.value = false;
@@ -1087,11 +1144,13 @@ async function requestRebuildVectorIndex(): Promise<void> {
     return;
   }
   if (isAiVectorIndexPhaseBusy()) {
-    appToast("索引任务正在进行中，请稍候。");
+    appToast("索引任务正在进行中，请稍候。", { kind: "info" });
     return;
   }
   if (chatAwaitingReply.value || streaming.value) {
-    appToast("对话正在进行中，请先停止或等待完成后再重建索引。");
+    appToast("对话正在进行中，请先停止或等待完成后再重建索引。", {
+      kind: "info",
+    });
     return;
   }
   activeRequestId.value += 1;
@@ -1110,15 +1169,51 @@ async function requestRebuildVectorIndex(): Promise<void> {
   }
 }
 
-/** 侧栏 header「更多 → 清除缓存」：删除本书向量索引与分词缓存（不含对话记录） */
-async function requestClearAiBookCache(): Promise<void> {
+const segmentRebuildBusy = ref(false);
+
+/** 侧栏 header「更多 → 重建词云分词」：清空后按章重建 segment.sqlite */
+async function requestRebuildSegmentCache(): Promise<void> {
+  if (!bookHash.value) return;
+  if (segmentRebuildBusy.value) {
+    appToast("分词任务正在进行中，请稍候。", { kind: "info" });
+    return;
+  }
+  const chapterCount = props.chapters.length;
+  if (chapterCount <= 0) {
+    await appAlert("当前没有可分词的章节。");
+    return;
+  }
+  segmentRebuildBusy.value = true;
+  try {
+    const res = await window.colorTxt.ai.segmentRebuildBook({
+      bookHash: bookHash.value,
+      chapterCount,
+    });
+    if (!res.ok) {
+      await appAlert(res.error || "重建词云分词失败。");
+      return;
+    }
+    appToast(`已重建词云分词（${res.chaptersBuilt} 章）。`, {
+      kind: "success",
+    });
+  } catch (e) {
+    await appAlert(e instanceof Error ? e.message : "重建词云分词失败。");
+  } finally {
+    segmentRebuildBusy.value = false;
+  }
+}
+
+/** 侧栏 header「更多 → 清除向量索引缓存」 */
+async function requestClearVectorIndexCache(): Promise<void> {
   if (!bookHash.value) return;
   if (isAiVectorIndexPhaseBusy()) {
-    appToast("索引任务正在进行中，请稍候。");
+    appToast("索引任务正在进行中，请稍候。", { kind: "info" });
     return;
   }
   if (chatAwaitingReply.value || streaming.value) {
-    appToast("对话正在进行中，请先停止或等待完成后再清除缓存。");
+    appToast("对话正在进行中，请先停止或等待完成后再清除向量索引。", {
+      kind: "info",
+    });
     return;
   }
   const r = await window.colorTxt.showMessageBox({
@@ -1127,22 +1222,104 @@ async function requestClearAiBookCache(): Promise<void> {
     buttons: ["取消", "清除"],
     defaultId: 1,
     cancelId: 0,
-    message: "是否清除本书 AI 缓存？",
-    detail:
-      "将删除本书的向量索引与词云分词缓存；对话记录会保留。",
+    message: "是否清除本书向量索引？",
+    detail: "将删除本书的向量索引；对话记录与词云分词缓存会保留。",
     noLink: true,
   });
   if (r.response !== 1) return;
   const del = await window.colorTxt.ai.indexDeleteBook(bookHash.value);
   if (!del.ok) {
-    await appAlert("清除缓存失败。");
+    await appAlert("清除向量索引失败。");
     return;
   }
   indexPhase.value = "idle";
   indexError.value = "";
   indexEmbedCurrent.value = 0;
   indexEmbedTotal.value = 0;
-  appToast("已清除本书 AI 缓存。", { kind: "success" });
+  appToast("已清除本书向量索引。", { kind: "success" });
+}
+
+/** 侧栏 header「更多 → 清除词云分词缓存」 */
+async function requestClearSegmentCache(): Promise<void> {
+  if (!bookHash.value) return;
+  if (segmentRebuildBusy.value) {
+    appToast("分词任务正在进行中，请稍候。", { kind: "info" });
+    return;
+  }
+  const r = await window.colorTxt.showMessageBox({
+    type: "warning",
+    title: APP_DISPLAY_NAME,
+    buttons: ["取消", "清除"],
+    defaultId: 1,
+    cancelId: 0,
+    message: "是否清除本书词云分词缓存？",
+    detail: "将删除本书的词云分词缓存；对话记录与向量索引会保留。",
+    noLink: true,
+  });
+  if (r.response !== 1) return;
+  const del = await window.colorTxt.ai.segmentDeleteBook(bookHash.value);
+  if (!del.ok) {
+    await appAlert("清除词云分词缓存失败。");
+    return;
+  }
+  appToast("已清除本书词云分词缓存。", { kind: "success" });
+}
+
+/** 侧栏 header「更多 → 清除对话记录」：删除本书全部会话与消息（不含向量索引） */
+async function requestClearAiChatHistory(): Promise<void> {
+  if (!bookHash.value) return;
+  if (chatAwaitingReply.value || streaming.value) {
+    appToast("对话正在进行中，请先停止或等待完成后再清除对话记录。", {
+      kind: "info",
+    });
+    return;
+  }
+  const r = await window.colorTxt.showMessageBox({
+    type: "warning",
+    title: APP_DISPLAY_NAME,
+    buttons: ["取消", "清除"],
+    defaultId: 1,
+    cancelId: 0,
+    message: "是否清除本书对话记录？",
+    detail: "将删除本书的全部 AI 对话记录；向量索引与分词缓存会保留。",
+    noLink: true,
+  });
+  if (r.response !== 1) return;
+  try {
+    if (streaming.value) onStop();
+    else if (chatAwaitingReply.value) {
+      abortActiveAiWork(activeRequestId.value);
+      chatAwaitingReply.value = false;
+    }
+    const list = await window.colorTxt.ai.threadList(bookHash.value);
+    for (const t of list) {
+      await window.colorTxt.ai.threadDelete(t.id);
+    }
+    await reloadUiAfterChatHistoryCleared();
+    appToast("已清除本书对话记录。", { kind: "success" });
+  } catch (e) {
+    await appAlert(
+      e instanceof Error ? e.message : "清除对话记录失败。",
+    );
+  }
+}
+
+/** 阅读数据被外部清除后：刷新侧栏对话与索引 UI（假定该书会话/索引/分词已删） */
+async function reloadUiAfterChatHistoryCleared(): Promise<void> {
+  if (streaming.value) onStop();
+  else if (chatAwaitingReply.value) {
+    abortActiveAiWork(activeRequestId.value);
+    chatAwaitingReply.value = false;
+  }
+  threadId.value = null;
+  messages.value = [];
+  threads.value = [];
+  historyOpen.value = false;
+  indexPhase.value = "idle";
+  indexError.value = "";
+  indexEmbedCurrent.value = 0;
+  indexEmbedTotal.value = 0;
+  await ensureThread();
 }
 
 async function buildIndex(
@@ -1351,6 +1528,7 @@ async function onSend() {
       spoilerSafe: spoilerSafe.value,
       chatModelOverride: override,
       slidingWindowSize: cfg.chat.slidingWindowSize,
+      maxToolRounds: cfg.chat.maxToolRounds,
       enabledSkills: collectEnabledAgentSkills(
         props.aiSkillsEnabled ?? {},
         props.aiSkillOverrides ?? {},
@@ -1534,6 +1712,28 @@ function resolveExportSaveDefaultPath(fileName: string): string | undefined {
   return joinFs(dir, fileName);
 }
 
+/** 导出默认文件名中的「书名」：优先会话路径 basename（与书签/笔记等一致） */
+function resolveExportBookName(): string {
+  const p = (props.sessionFilePath || props.physicalReaderPath || "").trim();
+  if (!p) return "对话";
+  const norm = p.replace(/\\/g, "/");
+  const base = norm.slice(norm.lastIndexOf("/") + 1).trim();
+  return base || "对话";
+}
+
+function chatExportDefaultName(
+  exportTitle: string,
+  ext: "md" | "json",
+  withReasoning: boolean,
+): string {
+  return buildChatExportDefaultName(
+    resolveExportBookName(),
+    exportTitle,
+    ext,
+    withReasoning,
+  );
+}
+
 async function exportMd() {
   const tid = threadId.value;
   if (!tid || messages.value.length === 0) return;
@@ -1543,7 +1743,7 @@ async function exportMd() {
     threads.value,
     messages.value,
   );
-  const name = buildChatExportDefaultName(exportTitle, "md", false);
+  const name = chatExportDefaultName(exportTitle, "md", false);
   const r = await window.colorTxt.ai.exportSave({
     defaultName: name,
     defaultPath: resolveExportSaveDefaultPath(name),
@@ -1554,7 +1754,7 @@ async function exportMd() {
       skillToolDisplayLabels.value,
       props.chapters,
     ),
-    filters: [{ name: "Markdown", extensions: ["md"] }],
+    filters: [{ name: "彩读对话", extensions: ["md"] }],
   });
   if (!r.ok && "error" in r) await appAlert(r.error);
 }
@@ -1568,7 +1768,7 @@ async function exportMdWithReasoning() {
     threads.value,
     messages.value,
   );
-  const name = buildChatExportDefaultName(exportTitle, "md", true);
+  const name = chatExportDefaultName(exportTitle, "md", true);
   const r = await window.colorTxt.ai.exportSave({
     defaultName: name,
     defaultPath: resolveExportSaveDefaultPath(name),
@@ -1579,7 +1779,7 @@ async function exportMdWithReasoning() {
       skillToolDisplayLabels.value,
       props.chapters,
     ),
-    filters: [{ name: "Markdown", extensions: ["md"] }],
+    filters: [{ name: "彩读对话", extensions: ["md"] }],
   });
   if (!r.ok && "error" in r) await appAlert(r.error);
 }
@@ -1593,7 +1793,7 @@ async function exportJson() {
     threads.value,
     messages.value,
   );
-  const name = buildChatExportDefaultName(exportTitle, "json", false);
+  const name = chatExportDefaultName(exportTitle, "json", false);
   const r = await window.colorTxt.ai.exportSave({
     defaultName: name,
     defaultPath: resolveExportSaveDefaultPath(name),
@@ -1604,7 +1804,7 @@ async function exportJson() {
       skillToolDisplayLabels.value,
       props.chapters,
     ),
-    filters: [{ name: "JSON", extensions: ["json"] }],
+    filters: [{ name: "彩读对话", extensions: ["json"] }],
   });
   if (!r.ok && "error" in r) await appAlert(r.error);
 }
@@ -1618,7 +1818,7 @@ async function exportJsonWithReasoning() {
     threads.value,
     messages.value,
   );
-  const name = buildChatExportDefaultName(exportTitle, "json", true);
+  const name = chatExportDefaultName(exportTitle, "json", true);
   const r = await window.colorTxt.ai.exportSave({
     defaultName: name,
     defaultPath: resolveExportSaveDefaultPath(name),
@@ -1629,7 +1829,7 @@ async function exportJsonWithReasoning() {
       skillToolDisplayLabels.value,
       props.chapters,
     ),
-    filters: [{ name: "JSON", extensions: ["json"] }],
+    filters: [{ name: "彩读对话", extensions: ["json"] }],
   });
   if (!r.ok && "error" in r) await appAlert(r.error);
 }
@@ -1698,11 +1898,13 @@ function onHistoryDocKeydown(ev: KeyboardEvent) {
   if (ev.key !== "Escape") return;
   if (historyOpen.value) {
     ev.preventDefault();
+    ev.stopPropagation();
     historyOpen.value = false;
     return;
   }
   if (exportMenuOpen.value) {
     ev.preventDefault();
+    ev.stopPropagation();
     exportMenuOpen.value = false;
   }
 }
@@ -1758,9 +1960,41 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
+function scrollComposerToCaretEnd() {
+  const el = composerInputRef.value;
+  if (!el) return;
+  const len = el.value.length;
+  el.setSelectionRange(len, len);
+  el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+}
+
+function prefillQuotedText(text: string) {
+  const quoted = text
+    .split("\n")
+    .map((line) => `> ${line}`)
+    .join("\n");
+  input.value = `${quoted}\n\n`;
+  void nextTick(() => {
+    const layoutComposer = () => {
+      autosizeComposerInput();
+      const el = composerInputRef.value;
+      if (!el) return;
+      el.focus({ preventScroll: true });
+      scrollComposerToCaretEnd();
+    };
+    layoutComposer();
+    requestAnimationFrame(layoutComposer);
+  });
+}
+
 defineExpose({
   requestRebuildVectorIndex,
-  requestClearAiBookCache,
+  requestRebuildSegmentCache,
+  requestClearVectorIndexCache,
+  requestClearSegmentCache,
+  requestClearAiChatHistory,
+  reloadUiAfterChatHistoryCleared,
+  prefillQuotedText,
 });
 </script>
 
@@ -1912,7 +2146,8 @@ defineExpose({
             role="menuitem"
             @click="exportMd"
           >
-            导出 Markdown
+            <span class="appShellMenuIconSlot" v-html="icons.export" />
+            <span class="appShellMenuLabel">导出 Markdown</span>
           </button>
           <button
             type="button"
@@ -1920,7 +2155,8 @@ defineExpose({
             role="menuitem"
             @click="exportMdWithReasoning"
           >
-            导出 Markdown（带思考过程）
+            <span class="appShellMenuIconSlot" v-html="icons.export" />
+            <span class="appShellMenuLabel">导出 Markdown（带思考过程）</span>
           </button>
           <div class="appShellMenuDivider" role="presentation" />
           <button
@@ -1929,7 +2165,8 @@ defineExpose({
             role="menuitem"
             @click="exportJson"
           >
-            导出 JSON
+            <span class="appShellMenuIconSlot" v-html="icons.export" />
+            <span class="appShellMenuLabel">导出 JSON</span>
           </button>
           <button
             type="button"
@@ -1937,7 +2174,8 @@ defineExpose({
             role="menuitem"
             @click="exportJsonWithReasoning"
           >
-            导出 JSON（带思考过程）
+            <span class="appShellMenuIconSlot" v-html="icons.export" />
+            <span class="appShellMenuLabel">导出 JSON（带思考过程）</span>
           </button>
           <div class="appShellMenuDivider" role="presentation" />
           <button
@@ -1946,7 +2184,8 @@ defineExpose({
             role="menuitem"
             @click="copyAllMarkdown"
           >
-            复制全部
+            <span class="appShellMenuIconSlot" v-html="icons.copy" />
+            <span class="appShellMenuLabel">复制全部</span>
           </button>
           <button
             type="button"
@@ -1954,7 +2193,8 @@ defineExpose({
             role="menuitem"
             @click="copyAllMarkdownWithReasoning"
           >
-            复制全部（带思考过程）
+            <span class="appShellMenuIconSlot" v-html="icons.copy" />
+            <span class="appShellMenuLabel">复制全部（带思考过程）</span>
           </button>
         </div>
       </Teleport>

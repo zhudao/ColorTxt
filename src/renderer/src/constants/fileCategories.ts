@@ -39,6 +39,24 @@ export type FileSortMode =
 
 export const DEFAULT_FILE_SORT: FileSortMode = "nameAsc";
 
+/** 侧栏文件列表展示：扁平列表 / 路径树 */
+export type FileListViewMode = "list" | "tree";
+
+export const DEFAULT_FILE_LIST_VIEW_MODE: FileListViewMode = "list";
+
+export const FILE_LIST_VIEW_MODES: readonly FileListViewMode[] = [
+  "list",
+  "tree",
+] as const;
+
+export function isFileListViewMode(x: unknown): x is FileListViewMode {
+  return x === "list" || x === "tree";
+}
+
+export function parseFileListViewMode(x: unknown): FileListViewMode {
+  return isFileListViewMode(x) ? x : DEFAULT_FILE_LIST_VIEW_MODE;
+}
+
 export const FILE_SORT_MODES: readonly FileSortMode[] = [
   "nameAsc",
   "nameDesc",

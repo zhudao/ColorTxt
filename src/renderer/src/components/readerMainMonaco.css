@@ -1,4 +1,62 @@
 /*
+ * Monaco 右键菜单（兜底：个别路径仍可能弹出内建菜单；与 AppContextMenu / --panel 对齐）。
+ */
+.context-view.monaco-menu-container,
+.monaco-menu-container {
+  background-color: var(
+    --vscode-menu-background,
+    var(--panel, var(--bg))
+  ) !important;
+  border: 1px solid
+    var(--vscode-menu-border, var(--border)) !important;
+  border-radius: 4px !important;
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--fg) 12%, transparent) !important;
+  overflow: hidden;
+}
+
+.monaco-menu,
+.monaco-menu .monaco-action-bar.vertical {
+  background-color: var(
+    --vscode-menu-background,
+    var(--panel, var(--bg))
+  ) !important;
+}
+
+.monaco-menu .action-item {
+  color: var(--vscode-menu-foreground, var(--fg)) !important;
+}
+
+.monaco-menu .action-item.focused,
+.monaco-menu .action-item:hover {
+  background: var(
+    --vscode-menu-selectionBackground,
+    var(--list-item-bg-hover)
+  ) !important;
+  color: var(
+    --vscode-menu-selectionForeground,
+    var(--list-item-fg-active)
+  ) !important;
+}
+
+.monaco-menu .action-label.separator {
+  background-color: var(--vscode-menu-separatorBackground, var(--border)) !important;
+  opacity: 1 !important;
+}
+
+/*
+ * 编辑器表面透明：底色/纹理只画在最外层 `.readerSurfaceBg`，
+ * 全屏两侧留白才能与正文共用同一张图。
+ */
+.readerPane .monaco-editor,
+.readerPane .monaco-editor .overflow-guard,
+.readerPane .monaco-editor .monaco-scrollable-element,
+.readerPane .monaco-editor .editor-scrollable,
+.readerPane .monaco-editor .margin,
+.readerPane .monaco-editor .monaco-editor-background {
+  background-color: transparent !important;
+}
+
+/*
  * ReaderMain：Monaco 全局覆盖（非 scoped，需命中编辑器内部 DOM）。
  * `lines-content` 内顺序为 overlays → view-zones → view-lines；抬高 view-zones 便于插图命中。
  */
@@ -17,9 +75,10 @@
   align-items: center;
   justify-content: center;
   width: 100%;
-  height: 100%;
+  /* 高度由 readerImageViewZones 按内容高写入；底部 padding 留给段间距 */
   box-sizing: border-box;
   pointer-events: none !important;
+  overflow: hidden;
 }
 .monaco-editor .readerImageViewZone img {
   display: block !important;
@@ -92,6 +151,10 @@
   -webkit-mask-position: center;
 }
 
+.monaco-editor .readerEbookLinkIcon.readerEbookInlineImage {
+  cursor: default;
+}
+
 .monaco-editor .readerInlineSearchMatch {
   background: var(
     --vscode-editor-findMatchHighlightBackground,
@@ -128,12 +191,90 @@
   background: color-mix(in srgb, var(--search-hit-bg) 26%, transparent);
 }
 
+.monaco-editor.reader-reading-ruler .view-line {
+  opacity: var(--reader-ruler-dim, 0.2);
+}
+.monaco-editor.reader-reading-ruler .view-line:has(.readerRulerFocus) {
+  opacity: 1;
+}
+/*
+ * Monaco 装饰变化会 replaceWith 整行 DOM，transition 接不上旧透明度。
+ * 新节点用 animation + fill-mode，才能淡入/淡出。
+ */
+.monaco-editor.reader-reading-ruler.reader-reading-ruler-transition .view-line:has(.readerRulerFocus) {
+  animation: readerRulerFocusIn 0.2s ease backwards;
+}
+.monaco-editor.reader-reading-ruler.reader-reading-ruler-transition .view-line:has(.readerRulerFocusOut) {
+  animation: readerRulerFocusOut 0.2s ease both;
+}
+.monaco-editor.reader-reading-ruler .readerImageViewZone {
+  opacity: var(--reader-ruler-dim, 0.2);
+  transition: opacity 0.2s ease;
+}
+.monaco-editor.reader-reading-ruler .readerImageViewZone.readerRulerFocus,
+.monaco-editor.reader-reading-ruler .readerImageViewZone:hover,
+.monaco-editor.reader-reading-ruler .readerImageViewZone:has(img:hover) {
+  opacity: 1;
+}
+.monaco-editor.reader-reading-ruler.reader-reading-ruler-dim-sticky .sticky-widget .sticky-line-content,
+.monaco-editor.reader-reading-ruler.reader-reading-ruler-dim-sticky .sticky-widget .sticky-line-number {
+  opacity: var(--reader-ruler-dim, 0.2);
+  transition: opacity 0.2s ease;
+}
+@keyframes readerRulerFocusIn {
+  from {
+    opacity: var(--reader-ruler-dim, 0.2);
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes readerRulerFocusOut {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: var(--reader-ruler-dim, 0.2);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .monaco-editor.reader-reading-ruler.reader-reading-ruler-transition .view-line:has(.readerRulerFocus),
+  .monaco-editor.reader-reading-ruler.reader-reading-ruler-transition .view-line:has(.readerRulerFocusOut) {
+    animation: none;
+  }
+  .monaco-editor.reader-reading-ruler .readerImageViewZone,
+  .monaco-editor.reader-reading-ruler.reader-reading-ruler-dim-sticky .sticky-widget .sticky-line-content,
+  .monaco-editor.reader-reading-ruler.reader-reading-ruler-dim-sticky .sticky-widget .sticky-line-number {
+    transition: none;
+  }
+}
+
+/*
+ * 溢出挂件容器：零尺寸 fixed 层，不挡点击；子节点恢复 pointer-events。
+ * 须同时带 `monaco-editor` + 主题类（见 ReaderMain.ensureReaderMonacoOverflowHost）。
+ */
+.reader-monaco-overflow-host {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 10050;
+}
+
+.reader-monaco-overflow-host > * {
+  pointer-events: auto;
+}
+
 /*
  * 脚注等长文案悬停：Monaco 内建 DomScrollableElement，超高时按需出滚动条。
  * 勿 flex 居中 / pointer-events:none，否则内容被裁切且无法移入面板滚动。
- * `overflowWidgetsDomNode: body` 后 VS Code 主题变量不在作用域，须用 `--panel` 等全局回退。
+ * 挂到 overflow host 后 `.monaco-editor .xxx` 仍可能缺 VS Code 变量，须 `--panel` 等回退。
  */
 .monaco-editor .monaco-resizable-hover,
+.reader-monaco-overflow-host .monaco-resizable-hover,
 body > .overflowingContentWidgets .monaco-resizable-hover,
 .overflowingContentWidgets .monaco-resizable-hover {
   background-color: var(
@@ -145,8 +286,12 @@ body > .overflowingContentWidgets .monaco-resizable-hover,
 }
 
 .monaco-editor .monaco-resizable-hover > .monaco-hover,
+.reader-monaco-overflow-host .monaco-resizable-hover > .monaco-hover,
+.reader-monaco-overflow-host .monaco-hover,
 body > .overflowingContentWidgets .monaco-resizable-hover > .monaco-hover,
-.overflowingContentWidgets .monaco-resizable-hover > .monaco-hover {
+.overflowingContentWidgets .monaco-resizable-hover > .monaco-hover,
+body > .overflowingContentWidgets .monaco-hover,
+.overflowingContentWidgets .monaco-hover {
   background-color: var(
     --vscode-editorHoverWidget-background,
     var(--panel)
@@ -159,12 +304,45 @@ body > .overflowingContentWidgets .monaco-resizable-hover > .monaco-hover,
   pointer-events: auto !important;
 }
 
+/*
+ * 补全/「无建议」等 suggest 挂件：挂到 overflow host 后须补背景与边框。
+ */
+.reader-monaco-overflow-host .suggest-widget,
+.reader-monaco-overflow-host .suggest-details,
+body > .overflowingContentWidgets .suggest-widget,
+.overflowingContentWidgets .suggest-widget,
+body > .overflowingContentWidgets .suggest-details,
+.overflowingContentWidgets .suggest-details {
+  background-color: var(
+    --vscode-editorSuggestWidget-background,
+    var(--panel)
+  ) !important;
+  color: var(--vscode-editorSuggestWidget-foreground, var(--fg)) !important;
+  border: 1px solid
+    var(--vscode-editorSuggestWidget-border, var(--border)) !important;
+  border-radius: 3px !important;
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--fg) 12%, transparent);
+  z-index: 10050;
+}
+
+.reader-monaco-overflow-host .suggest-widget .message,
+body > .overflowingContentWidgets .suggest-widget .message,
+.overflowingContentWidgets .suggest-widget .message {
+  color: var(--vscode-editorSuggestWidget-foreground, var(--fg)) !important;
+}
+
 /* 挂到 body 的悬停滚动条：沿用阅读区滚动条色，超长脚注可拖滑块阅读 */
+.reader-monaco-overflow-host .monaco-hover .monaco-scrollable-element > .scrollbar,
 body > .overflowingContentWidgets .monaco-hover .monaco-scrollable-element > .scrollbar,
 .overflowingContentWidgets .monaco-hover .monaco-scrollable-element > .scrollbar {
   background: var(--vscode-scrollbar-background, var(--scrollbar-track)) !important;
 }
 
+.reader-monaco-overflow-host
+  .monaco-hover
+  .monaco-scrollable-element
+  > .scrollbar
+  > .slider,
 body > .overflowingContentWidgets
   .monaco-hover
   .monaco-scrollable-element
@@ -181,6 +359,11 @@ body > .overflowingContentWidgets
   ) !important;
 }
 
+.reader-monaco-overflow-host
+  .monaco-hover
+  .monaco-scrollable-element
+  > .scrollbar
+  > .slider:hover,
 body > .overflowingContentWidgets
   .monaco-hover
   .monaco-scrollable-element
@@ -200,6 +383,34 @@ body > .overflowingContentWidgets
 .monaco-editor .find-widget .button {
   width: 22px;
   height: 22px;
+}
+
+/* 查找栏计数、按钮等不可拖选；搜索输入框仍可选中复制 */
+.monaco-editor .find-widget,
+.monaco-editor .find-widget *,
+.reader-monaco-overflow-host .find-widget,
+.reader-monaco-overflow-host .find-widget * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
+.monaco-editor .find-widget input,
+.monaco-editor .find-widget textarea,
+.monaco-editor .find-widget .monaco-inputbox,
+.monaco-editor .find-widget .monaco-inputbox .input,
+.monaco-editor .find-widget .monaco-findInput .input,
+.reader-monaco-overflow-host .find-widget input,
+.reader-monaco-overflow-host .find-widget textarea,
+.reader-monaco-overflow-host .find-widget .monaco-inputbox,
+.reader-monaco-overflow-host .find-widget .monaco-inputbox .input,
+.reader-monaco-overflow-host .find-widget .monaco-findInput .input {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+
+.monaco-editor .find-widget .matchesCount,
+.reader-monaco-overflow-host .find-widget .matchesCount {
+  cursor: default;
 }
 
 /*
@@ -224,35 +435,261 @@ body > .overflowingContentWidgets
 
 /*
  * 概览尺与竖向滚动条同宽重叠（Monaco layout）；Canvas 透明底、叠在轨道之上，避免底色挡住光标标记。
+ * 须限定在 `.readerPane`，避免书源全屏 Monaco 等其它实例被阅读器滚动条色污染。
  */
-.monaco-editor .decorationsOverviewRuler {
+.readerPane .monaco-editor .decorationsOverviewRuler {
   background-color: transparent;
   z-index: 11;
   pointer-events: none;
 }
 
 /*
- * 滚动条轨道与小地图同色；概览尺 Canvas 在上层绘制光标/装饰标记。
+ * 滚动条轨道：只读透明以露出背景图；编辑模式与小地图一样用实心 `--reader-bg`。
+ * 勿对 `.scrollbar` 设 pointer-events: none，轨道点击跳转与滑块拖动依赖该层。
  */
-.monaco-editor .monaco-scrollable-element > .scrollbar.vertical,
-.monaco-editor .monaco-scrollable-element > .scrollbar.vertical.visible {
-  background: var(--vscode-scrollbar-background) !important;
+.readerPane .monaco-editor .monaco-scrollable-element > .scrollbar.vertical,
+.readerPane
+  .monaco-editor
+  .monaco-scrollable-element
+  > .scrollbar.vertical.visible {
+  background: transparent !important;
   z-index: 10;
 }
 
-.monaco-editor .monaco-scrollable-element > .scrollbar.horizontal,
-.monaco-editor .monaco-scrollable-element > .scrollbar.horizontal.visible {
-  background: var(--vscode-scrollbar-background) !important;
+.readerPane .monaco-editor .monaco-scrollable-element > .scrollbar.horizontal,
+.readerPane
+  .monaco-editor
+  .monaco-scrollable-element
+  > .scrollbar.horizontal.visible {
+  background: transparent !important;
 }
 
-.monaco-editor .monaco-scrollable-element > .scrollbar > .slider {
+.readerPane.content--readerEdit
+  .monaco-editor
+  .monaco-scrollable-element
+  > .scrollbar.vertical,
+.readerPane.content--readerEdit
+  .monaco-editor
+  .monaco-scrollable-element
+  > .scrollbar.vertical.visible,
+.readerPane.content--readerEdit
+  .monaco-editor
+  .monaco-scrollable-element
+  > .scrollbar.horizontal,
+.readerPane.content--readerEdit
+  .monaco-editor
+  .monaco-scrollable-element
+  > .scrollbar.horizontal.visible {
+  background: var(--reader-bg) !important;
+}
+
+/*
+ * 全屏 / 极简只读：竖条与概览尺随系统光标一起藏（`.fullscreen--cursorHidden`）。
+ * Monaco 竖条保持 `visible`，不再自己淡出。拖滑块时不要藏，以免按住不动时条消失。
+ */
+.chromeHidden
+  .readerPane:not(.content--readerEdit)
+  .monaco-editor
+  .monaco-scrollable-element
+  > .scrollbar.vertical,
+.chromeHidden
+  .readerPane:not(.content--readerEdit)
+  .monaco-editor
+  .decorationsOverviewRuler {
+  transition: opacity 0.25s ease;
+}
+
+.chromeHidden.fullscreen--cursorHidden
+  .readerPane:not(.content--readerEdit)
+  .monaco-editor
+  .monaco-scrollable-element
+  > .scrollbar.vertical:not(:has(.slider.active)),
+.chromeHidden.fullscreen--cursorHidden
+  .readerPane:not(.content--readerEdit)
+  .monaco-editor
+  .decorationsOverviewRuler {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+.readerPane .monaco-editor .monaco-scrollable-element > .scrollbar > .slider {
   background: var(--vscode-scrollbarSlider-background) !important;
 }
 
-.monaco-editor .monaco-scrollable-element > .scrollbar > .slider:hover {
+.readerPane
+  .monaco-editor
+  .monaco-scrollable-element
+  > .scrollbar
+  > .slider:hover {
   background: var(--vscode-scrollbarSlider-hoverBackground) !important;
 }
 
-.monaco-editor .monaco-scrollable-element > .scrollbar > .slider.active {
+.readerPane
+  .monaco-editor
+  .monaco-scrollable-element
+  > .scrollbar
+  > .slider.active {
   background: var(--vscode-scrollbarSlider-activeBackground) !important;
+}
+
+/*
+ * Diff 左右分栏 sash：与侧栏 .resizer 共用 --app-sash-* / --vscode-sash-*；
+ * standalone Monaco 未必挂 monaco-enable-motion，补上与 VS Code 一致的渐隐。
+ */
+.editorHost--diff .monaco-sash:before {
+  transition: background-color var(--app-sash-fade-duration, 0.1s) ease-out;
+}
+
+/*
+ * 智能排版 Diff 预览：Monaco 中间 .gutter 工具栏（非左右编辑器边框）。
+ * 背景与 AppHeader 顶栏一致（--bg）；差异块范围竖线为 .gutterItem > .background；
+ * 「还原原文」按钮对齐 IconButton（圆角 4px、常态有底、hover 加深）。
+ */
+.editorHost--diff .monaco-diff-editor .gutter {
+  background-color: var(--bg, var(--reader-bg)) !important;
+}
+
+.editorHost--diff .monaco-diff-editor .gutter .gutterItem {
+  opacity: 1 !important;
+}
+
+.editorHost--diff .monaco-diff-editor .gutter .gutterItem .background {
+  border-left: 2px solid var(--border) !important;
+}
+
+.editorHost--diff
+  .monaco-diff-editor
+  .gutter
+  .gutterItem
+  .buttons
+  .monaco-action-bar {
+  line-height: 1 !important;
+}
+
+.editorHost--diff
+  .monaco-diff-editor
+  .gutter
+  .gutterItem
+  .buttons
+  .monaco-action-bar
+  .actions-container {
+  width: fit-content !important;
+  border-radius: 4px !important;
+  background: transparent !important;
+  padding: 0 !important;
+}
+
+.editorHost--diff
+  .monaco-diff-editor
+  .gutter
+  .gutterItem
+  .buttons
+  .action-item {
+  border-radius: 4px !important;
+  width: fit-content !important;
+  height: auto !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  background: color-mix(
+    in srgb,
+    var(--icon-btn-bg-active) 90%,
+    var(--fg) 10%
+  ) !important;
+  transition: background 0.16s ease;
+}
+
+.editorHost--diff
+  .monaco-diff-editor
+  .gutter
+  .gutterItem
+  .buttons
+  .action-item:hover {
+  background: var(--icon-btn-bg-hover) !important;
+}
+
+.editorHost--diff
+  .monaco-diff-editor
+  .gutter
+  .gutterItem
+  .buttons
+  .action-label {
+  cursor: pointer;
+  color: var(--icon-btn-fg) !important;
+  width: auto !important;
+  height: auto !important;
+  display: inline-block !important;
+  box-sizing: border-box;
+}
+
+/* 阅读器笔记/划线：须命中 .view-line span，并用 box-decoration-break 覆盖 Monarch 分词 span */
+.monaco-editor .hoverHighlight {
+  background-color: transparent !important;
+}
+
+.monaco-editor .view-lines .view-line span.readerAnnotationHit {
+  cursor: pointer;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+/*
+ * 只读：整层藏掉 textarea（IME 空白框 + 1px 原生选区线）。查找栏有独立 input，不受影响。
+ * 根节点 `content--readerEdit` 见 ReaderMain。
+ */
+.content:not(.content--readerEdit) .monaco-editor textarea.inputarea {
+  opacity: 0 !important;
+  color: transparent !important;
+  caret-color: transparent !important;
+}
+
+/*
+ * Native EditContext 默认 overflow-y:scroll；合成时 Chromium 会把该节点滚进视口。
+ * 只读已关 editContext，此处作兜底。
+ */
+.content:not(.content--readerEdit) .monaco-editor .native-edit-context {
+  overflow: hidden !important;
+}
+
+/*
+ * 全局 `textarea` / `:focus` 会给输入层加上 1px 强调色边框。
+ * 编辑态 EditContext 把该层拉成当前行，看起来像光标行蓝框。
+ * 同时藏掉原生 caret，只留 Monaco 绘制的光标（否则会闪两个）。
+ *
+ * 只读关了 EditContext，Windows 上 textarea 被做成「光标行顶 × 换行宽、高 1px」。
+ * 编辑器背景透明时，原生 `::selection` 会从这 1px 透出来，像选区顶/底一条细线。
+ */
+.monaco-editor textarea.inputarea,
+.monaco-editor .native-edit-context {
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  color: transparent !important;
+  caret-color: transparent !important;
+  padding: 0 !important;
+}
+
+.monaco-editor textarea.inputarea::selection,
+.monaco-editor textarea.inputarea::-moz-selection,
+.monaco-editor .native-edit-context::selection {
+  background: transparent !important;
+  color: transparent !important;
+}
+
+.monaco-editor .view-lines .view-line span.readerAnnotationNoteOnly {
+  text-decoration: none !important;
+  background-image: repeating-linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--vscode-editor-foreground, #888) 32%, transparent) 0,
+    color-mix(in srgb, var(--vscode-editor-foreground, #888) 32%, transparent) 4px,
+    transparent 4px,
+    transparent 6px
+  ) !important;
+  background-size: 6px 1px !important;
+  background-repeat: repeat-x !important;
+  background-position: 0 100% !important;
+  padding-bottom: 2px !important;
+  box-decoration-break: clone !important;
+  -webkit-box-decoration-break: clone !important;
 }

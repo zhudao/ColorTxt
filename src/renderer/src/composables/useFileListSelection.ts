@@ -81,17 +81,25 @@ export function useFileListSelection(
       next.length > 0 ? next[next.length - 1]! : null;
   }
 
+  /**
+   * @param orderedPaths 连选/可见顺序用的路径序列；缺省为 `filesFiltered`（列表模式）。
+   *   树状模式应传入当前可见的文件行路径（不含文件夹节点）。
+   */
   function onFileItemClick(
     item: SidebarFileItem,
-    listIndex: number,
+    _listIndex: number,
     ev: MouseEvent,
+    orderedPaths?: readonly string[],
   ) {
     const filePath = item.path;
     if (!isEditingFileList.value) {
       emit("openFile", item);
       return;
     }
-    const list = props.filesFiltered;
+    const order =
+      orderedPaths && orderedPaths.length > 0
+        ? orderedPaths
+        : visiblePaths();
     const toggleMod = ev.ctrlKey || ev.metaKey;
     const rangeMod = ev.shiftKey;
 
@@ -102,8 +110,8 @@ export function useFileListSelection(
         selectedFilePaths.value = [filePath];
         return;
       }
-      const anchorIdx = list.findIndex((f) => f.path === anchor);
-      const clickedIdx = listIndex;
+      const anchorIdx = order.indexOf(anchor);
+      const clickedIdx = order.indexOf(filePath);
       if (anchorIdx < 0 || clickedIdx < 0) {
         lastSelectedFilePath.value = filePath;
         selectedFilePaths.value = [filePath];
@@ -111,9 +119,9 @@ export function useFileListSelection(
       }
       const start = Math.min(anchorIdx, clickedIdx);
       const end = Math.max(anchorIdx, clickedIdx);
-      const rangePaths = list.slice(start, end + 1).map((f) => f.path);
+      const rangePaths = order.slice(start, end + 1);
       /* 与资源管理器一致：Shift 连选仅保留锚点～当前项的连续区间；不移动锚点（lastSelected） */
-      selectedFilePaths.value = rangePaths;
+      selectedFilePaths.value = rangePaths.slice();
       return;
     }
 

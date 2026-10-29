@@ -1,8 +1,8 @@
 <script setup lang="ts">
 withDefaults(
   defineProps<{
-    /** SVG 字符串，与 icons.xxx 一致 */
-    iconHtml: string;
+    /** SVG 字符串，与 icons.xxx 一致；有默认插槽时可省略 */
+    iconHtml?: string;
     title?: string;
     /** 图标按钮无文字时建议设置，便于读屏 */
     ariaLabel?: string;
@@ -14,8 +14,25 @@ withDefaults(
     disabled?: boolean;
     /** 表格操作列等：32×32、图标 18px */
     large?: boolean;
+    /** 编辑态「格式化」类操作：图标使用主题色，与只读切换按钮区分 */
+    primary?: boolean;
+    /**
+     * 危险操作（删除/移除等）：默认 muted，悬停 danger 色 + 浅红底。
+     * 与 `primary` 互斥使用。
+     */
+    danger?: boolean;
+    /** 临时态（如按住 Alt 切换阅读交互模式）：图标为 warning 色 */
+    warning?: boolean;
   }>(),
-  { active: false, multicolor: false, disabled: false, large: false },
+  {
+    active: false,
+    multicolor: false,
+    disabled: false,
+    large: false,
+    primary: false,
+    danger: false,
+    warning: false,
+  },
 );
 
 defineEmits<{ click: [e: MouseEvent] }>();
@@ -25,14 +42,18 @@ defineEmits<{ click: [e: MouseEvent] }>();
   <button
     type="button"
     class="iconBtn"
-    :class="{ active, large }"
+    :class="{ active, large, primary, danger, warning }"
     :title="title"
     :aria-label="ariaLabel"
     :aria-pressed="pressed"
     :disabled="disabled"
     @click="$emit('click', $event)"
   >
+    <span v-if="$slots.default" class="icon" :class="{ 'icon--multicolor': multicolor }">
+      <slot />
+    </span>
     <span
+      v-else
       class="icon"
       :class="{ 'icon--multicolor': multicolor }"
       v-html="iconHtml"
@@ -52,7 +73,9 @@ defineEmits<{ click: [e: MouseEvent] }>();
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: background 0.16s ease;
+  transition:
+    background 0.16s ease,
+    color 0.16s ease;
 }
 
 .iconBtn:hover:not(:disabled) {
@@ -72,7 +95,7 @@ defineEmits<{ click: [e: MouseEvent] }>();
   display: block;
 }
 
-.icon:not(.icon--multicolor) :deep(path) {
+.icon:not(.icon--multicolor) :deep(svg path) {
   fill: currentColor;
 }
 
@@ -95,5 +118,61 @@ defineEmits<{ click: [e: MouseEvent] }>();
 
 .iconBtn.active .icon:not(.icon--multicolor) {
   color: var(--icon-btn-fg);
+}
+
+.iconBtn.primary {
+  background: var(--primary);
+}
+.iconBtn.primary:hover:not(:disabled) {
+  background: var(--primary-hover);
+}
+.iconBtn.primary .icon:not(.icon--multicolor) {
+  color: #ffffff;
+}
+.iconBtn.primary:hover:not(:disabled) .icon:not(.icon--multicolor) {
+  color: #ffffff;
+}
+
+.iconBtn.large {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+}
+.iconBtn.large .icon {
+  width: 18px;
+  height: 18px;
+}
+.iconBtn.large .icon :deep(svg) {
+  width: 18px;
+  height: 18px;
+}
+
+/** 删除/移除：默认 --icon-btn-fg，悬停 --danger（书架管理、阅读数据等） */
+.iconBtn.danger {
+  border-radius: 6px;
+  color: var(--icon-btn-fg);
+}
+.iconBtn.danger .icon:not(.icon--multicolor) {
+  color: var(--icon-btn-fg);
+}
+.iconBtn.danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+}
+.iconBtn.danger:hover:not(:disabled) .icon:not(.icon--multicolor) {
+  color: var(--danger);
+}
+.iconBtn.danger.active {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+.iconBtn.danger.active .icon:not(.icon--multicolor) {
+  color: var(--danger);
+}
+
+.iconBtn.warning .icon:not(.icon--multicolor) {
+  color: var(--warning);
+}
+.iconBtn.warning:hover:not(:disabled) .icon:not(.icon--multicolor) {
+  color: var(--warning);
 }
 </style>

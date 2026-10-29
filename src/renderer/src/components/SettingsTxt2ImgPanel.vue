@@ -613,7 +613,6 @@ defineExpose({
 
     <template v-if="modelValue.txt2img.enabled">
       <section class="aiSection aiSection--compact">
-        <h3 class="aiSectionTitle">配置方案</h3>
         <AiConfigProfileToolbar
           :profiles="txt2imgProfileToolbarProfiles"
           :editing-id="txt2imgProfileToolbarEditingId"
@@ -822,7 +821,6 @@ defineExpose({
                 :min="64"
                 :max="2048"
                 integer
-                class="numCompact"
                 aria-label="文生图宽度"
               />
             </div>
@@ -837,7 +835,6 @@ defineExpose({
                 :min="64"
                 :max="2048"
                 integer
-                class="numCompact"
                 aria-label="文生图高度"
               />
             </div>
@@ -853,7 +850,6 @@ defineExpose({
               :min="1"
               :max="150"
               integer
-              class="numCompact"
               aria-label="采样步数"
             />
           </div>
@@ -867,7 +863,6 @@ defineExpose({
               v-model="modelValue.txt2img.cfgScale"
               :min="1"
               :max="30"
-              class="numCompact"
               aria-label="提示词相关性"
             />
           </div>
@@ -908,7 +903,6 @@ defineExpose({
               :min="-1"
               :max="2_147_483_647"
               integer
-              class="numCompact"
               aria-label="随机种子"
             />
           </div>
@@ -962,7 +956,6 @@ defineExpose({
                 v-model="modelValue.txt2img.hiresScale"
                 :min="1"
                 :max="8"
-                class="numCompact"
                 aria-label="高分辨率放大倍数"
               />
             </div>
@@ -979,7 +972,6 @@ defineExpose({
                 :min="0"
                 :max="150"
                 integer
-                class="numCompact"
                 aria-label="高分迭代步数"
               />
             </div>
@@ -997,7 +989,6 @@ defineExpose({
                 :min="0"
                 :max="1"
                 :step="0.01"
-                class="numCompact"
                 aria-label="高分辨率重绘幅度"
               />
             </div>
@@ -1012,7 +1003,6 @@ defineExpose({
                 :min="0"
                 :max="8192"
                 integer
-                class="numCompact"
                 aria-label="高分辨率目标宽度"
               />
             </div>
@@ -1028,7 +1018,6 @@ defineExpose({
                 :min="0"
                 :max="8192"
                 integer
-                class="numCompact"
                 aria-label="高分辨率目标高度"
               />
             </div>
@@ -1081,7 +1070,7 @@ defineExpose({
         </div>
         <p class="aiMasterHint">
           侧栏「角色卡」上传或生成的立绘将保存到：<code
-            >该目录 / 书名文件夹 / 角色名.png</code
+            >该目录 / 书名文件夹 / 角色名.{png|jpg|…}</code
           >；<br />修改目录后，旧目录的内容将自动迁移到新目录。
         </p>
       </section>
@@ -1188,11 +1177,6 @@ defineExpose({
   font-family: inherit;
   line-height: 1.45;
 }
-
-.numCompact {
-  width: 120px;
-}
-
 .txt2imgBackendSelect,
 .txt2imgQualitySelect,
 .txt2imgCloudSizeSelect {
@@ -1239,13 +1223,6 @@ defineExpose({
   flex: 1;
   min-width: 0;
   max-width: 100%;
-}
-
-.aiMasterHint code {
-  font-size: 11px;
-  padding: 2px 4px;
-  border-radius: 4px;
-  background: var(--panel-elevated, rgba(127, 127, 127, 0.12));
 }
 
 .settingsStretchTextarea--workflow {

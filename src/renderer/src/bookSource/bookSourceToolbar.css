@@ -1,0 +1,28 @@
+.bookSourceToolbarHeader {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.findBookPanel .bookSourceToolbarHeader {
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+input.bookSourceToolbarSearch[type="search"] {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.12));
+  background: var(--input-bg);
+  color: var(--fg);
+  font-size: inherit;
+  line-height: inherit;
+}
+
+input.bookSourceToolbarSearch[type="search"]::placeholder {
+  position: absolute;
+  top: 6px;
+}

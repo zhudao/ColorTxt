@@ -1,4 +1,14 @@
 import { app, BrowserWindow, globalShortcut } from "electron";
+import { isEyedropperWindow } from "./eyedropper";
+import {
+  isStealthModeActive,
+  isStealthReaderWindow,
+  isStealthSessionOwner,
+  resumeStealthSessionShortcuts,
+  setStealthOverlayHiddenByHotkey,
+  suspendStealthSessionShortcuts,
+} from "./stealthReader";
+import { isStealthSettingsWindow } from "./stealthSettingsWindow";
 
 /** Ctrl+`；各平台均使用 Control 键（非 Mac Cmd） */
 const DEFAULT_TOGGLE_VISIBILITY_ACCELERATOR = "Control+`" as const;
@@ -15,7 +25,13 @@ let currentToggleVisibilityAccelerator: string =
 let globalShortcutSuspendedForRecording = false;
 
 function allMainWindows(): BrowserWindow[] {
-  return BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed());
+  return BrowserWindow.getAllWindows().filter(
+    (w) =>
+      !w.isDestroyed() &&
+      !isEyedropperWindow(w) &&
+      !isStealthReaderWindow(w) &&
+      !isStealthSettingsWindow(w),
+  );
 }
 
 /** macOS：与隐身状态同步 `app.dock.hide` / `show`（不使用 setActivationPolicy）。 */
@@ -29,30 +45,41 @@ function syncDarwinStealthPresentation(): void {
 }
 
 function toggleAllWindowsVisibility(): void {
+  const stealthOn = isStealthModeActive();
   const windows = allMainWindows();
-  if (windows.length === 0) return;
+  if (windows.length === 0 && !stealthOn) return;
 
   if (!allWindowsStealthHidden) {
     minimizeSnapshotByWindowId.clear();
     for (const win of windows) {
+      // 摸鱼源窗已由会话 hide，全局隐身不要把它纳入「再 show」快照
+      if (stealthOn && isStealthSessionOwner(win)) continue;
       minimizeSnapshotByWindowId.set(win.id, win.isMinimized());
       win.setSkipTaskbar(true);
       win.hide();
     }
+    if (stealthOn) setStealthOverlayHiddenByHotkey(true);
     allWindowsStealthHidden = true;
     syncDarwinStealthPresentation();
   } else {
     allWindowsStealthHidden = false;
     syncDarwinStealthPresentation();
     for (const win of windows) {
+      if (stealthOn && isStealthSessionOwner(win)) continue;
       const wasMinimized = minimizeSnapshotByWindowId.get(win.id) ?? false;
       win.setSkipTaskbar(false);
-      win.show();
+      // 摸鱼中恢复其它窗时勿抢焦点，避免盖住覆盖层
+      if (stealthOn) win.showInactive();
+      else win.show();
       if (wasMinimized) win.minimize();
     }
     minimizeSnapshotByWindowId.clear();
-    const toFocus = windows.find((w) => !w.isMinimized());
-    toFocus?.focus();
+    if (stealthOn) {
+      setStealthOverlayHiddenByHotkey(false);
+    } else {
+      const toFocus = windows.find((w) => !w.isMinimized());
+      toFocus?.focus();
+    }
   }
 }
 
@@ -125,6 +152,7 @@ export function setToggleVisibilityShortcut(accelerator: string): {
 export function suspendGlobalShortcutsForRecording(): void {
   if (globalShortcutSuspendedForRecording) return;
   globalShortcut.unregister(currentToggleVisibilityAccelerator);
+  suspendStealthSessionShortcuts();
   globalShortcutSuspendedForRecording = true;
 }
 
@@ -132,4 +160,5 @@ export function resumeGlobalShortcutsAfterRecording(): void {
   if (!globalShortcutSuspendedForRecording) return;
   globalShortcutSuspendedForRecording = false;
   registerGlobalShortcuts();
+  resumeStealthSessionShortcuts();
 }

@@ -1,10 +1,14 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { DEFAULT_AI_QUICK_QUESTIONS, type AIConfig } from "@shared/aiTypes";
 import {
+  DEFAULT_AI_QUICK_QUESTIONS,
   DEFAULT_WORDCLOUD_MAX_WORDS,
+  MAX_TOOL_ROUNDS_MAX,
+  MAX_TOOL_ROUNDS_MIN,
   WORDCLOUD_MAX_WORDS_MAX,
   WORDCLOUD_MAX_WORDS_MIN,
+  defaultAIConfig,
+  type AIConfig,
 } from "@shared/aiTypes";
 import {
   CHAT_API_PROVIDER_CUSTOM_ID,
@@ -13,6 +17,7 @@ import {
   isChatApiProviderCustomId,
   resolveChatProviderPresetIdFromBaseUrl,
 } from "@shared/apiEndpointPresets";
+import { sortChatModelsForBaseUrl } from "@shared/chatModelPresets";
 import AppCustomSelect, { type CustomSelectItem } from "./AppCustomSelect.vue";
 import ApiEndpointInput from "./ApiEndpointInput.vue";
 import AppConnectionTestButton from "./AppConnectionTestButton.vue";
@@ -30,6 +35,14 @@ import {
   useSortableReorder,
 } from "../composables/useSortableReorder";
 import { MAX_AI_ENDPOINT_PROFILES } from "@shared/aiEndpointProfiles";
+import {
+  AI_SYSTEM_PROMPT_PRESET_CUSTOM_ID,
+  AI_SYSTEM_PROMPT_PRESET_NONE_ID,
+  AI_SYSTEM_PROMPT_PRESETS,
+  isBuiltInSystemPromptPresetMode,
+  systemPromptPresetDisplayLabel,
+  type SystemPromptExtraMode,
+} from "@shared/aiSystemPromptPresets";
 import { useChatProfileDraft } from "../composables/useAiEndpointProfileDraft";
 import AiConfigProfileToolbar from "./AiConfigProfileToolbar.vue";
 
@@ -80,6 +93,9 @@ const chatProviderDisplayLabel = computed(() => {
 
 function onChatProviderPresetSelect(id: string) {
   chatProviderExplicitId.value = id;
+  chatModelOptions.value = [];
+  modelValue.value.chat.model = "";
+
   if (isChatApiProviderCustomId(id)) {
     modelValue.value.chat.baseUrl = "";
     return;
@@ -115,46 +131,64 @@ watch(
   { immediate: true },
 );
 
-const chatModelScrollItems = computed((): CustomSelectItem[] =>
-  chatModelOptions.value.map((m) => ({
-    kind: "item",
-    id: m,
-    label: m,
-  })),
-);
+function chatModelsEndpointKey(): string {
+  const c = modelValue.value.chat;
+  return `${c.baseUrl.trim()}\0${c.apiKey}`;
+}
 
-const chatModelDisplayLabel = computed(() =>
-  modelValue.value.chat.model.trim(),
-);
+/** 接口地址或密钥变化后丢弃旧建议，下次聚焦再拉，避免点到别的服务商的模型 */
+watch(chatModelsEndpointKey, () => {
+  chatModelOptions.value = [];
+});
+
+let chatModelsReqSeq = 0;
 
 async function refreshChatModels(opts?: { pullDone?: AppPullFlashDone }) {
   const pullDone = opts?.pullDone;
+  const seq = ++chatModelsReqSeq;
+  const endpointKey = chatModelsEndpointKey();
   chatModelsLoading.value = true;
   let ok = false;
+  let aborted = false;
   try {
     const r = await window.colorTxt.ai.modelsList({
       baseUrl: modelValue.value.chat.baseUrl,
       apiKey: modelValue.value.chat.apiKey,
     });
+    if (seq !== chatModelsReqSeq || chatModelsEndpointKey() !== endpointKey) {
+      aborted = true;
+      return;
+    }
     ok = r.ok;
     if (r.ok) {
-      chatModelOptions.value = r.models;
-      if (r.models.length > 0) {
-        const cur = modelValue.value.chat.model.trim();
-        if (!cur || !r.models.includes(cur)) {
-          modelValue.value.chat.model = r.models[0]!;
-        }
+      chatModelOptions.value = sortChatModelsForBaseUrl(
+        modelValue.value.chat.baseUrl,
+        r.models,
+      );
+      // 仅在未填写模型时填入首个拉取结果；已填模型不强制覆盖（部分服务商无模型查询接口，允许手输）
+      if (
+        chatModelOptions.value.length > 0 &&
+        !modelValue.value.chat.model.trim()
+      ) {
+        modelValue.value.chat.model = chatModelOptions.value[0]!;
       }
     } else chatModelOptions.value = [];
   } finally {
-    chatModelsLoading.value = false;
-    if (pullDone) pullDone(ok);
-    else chatPullBtnRef.value?.clearStaleFailOnSilentSuccess(ok);
+    if (seq !== chatModelsReqSeq) {
+      pullDone?.("abort");
+    } else {
+      chatModelsLoading.value = false;
+      if (aborted) pullDone?.("abort");
+      else if (pullDone) pullDone(ok);
+      else chatPullBtnRef.value?.clearStaleFailOnSilentSuccess(ok);
+    }
   }
 }
 
-function onChatModelPanelOpenChange(isOpen: boolean) {
-  if (!isOpen || chatModelsLoading.value) return;
+/** 聚焦模型输入且尚无建议列表时静默拉取。按钮聚焦不触发，避免抢先把「拉取模型」点成静默请求。 */
+function onChatModelFocusIn(ev: FocusEvent) {
+  if (!(ev.target instanceof HTMLInputElement)) return;
+  if (chatModelsLoading.value) return;
   if (chatModelOptions.value.length > 0) return;
   void refreshChatModels();
 }
@@ -203,6 +237,18 @@ function restoreDefaultQuickQuestions() {
   resetQuickQuestionRowIds(modelValue.value.quickQuestions.length);
 }
 
+/** 「重置当前页」：当前对话方案 + 本页全局项（Token、缓存目录、思维导图、词云、快速提问） */
+function resetAiPageDraft() {
+  chatProfileDraft.resetCurrentProfileChat();
+  const def = defaultAIConfig;
+  modelValue.value.showTokenUsage = def.showTokenUsage;
+  modelValue.value.aiDataCacheDir = resolveDefaultAiDataCacheDirSync();
+  modelValue.value.autoMindmapOnSummaryAndCharacters =
+    def.autoMindmapOnSummaryAndCharacters;
+  modelValue.value.wordcloudMaxWords = def.wordcloudMaxWords;
+  restoreDefaultQuickQuestions();
+}
+
 function removeQuickQuestion(i: number) {
   const q = modelValue.value.quickQuestions;
   if (q.length <= 1) return;
@@ -240,6 +286,48 @@ async function runChatConnectionTest(): Promise<ConnectionTestResult> {
   return { ok: false, error: r.error };
 }
 
+const systemPromptPresetSelectItems = computed((): CustomSelectItem[] =>
+  AI_SYSTEM_PROMPT_PRESETS.map((p) => ({
+    kind: "item",
+    id: p.id,
+    label: p.label,
+    description: p.description,
+  })),
+);
+
+const showSystemPromptExtraEditor = computed(
+  () =>
+    modelValue.value.chat.systemPromptExtraMode !==
+    AI_SYSTEM_PROMPT_PRESET_NONE_ID,
+);
+
+let applyingSystemPromptPresetText = false;
+
+function onSystemPromptModeSelect(id: string) {
+  const mode = id as SystemPromptExtraMode;
+  modelValue.value.chat.systemPromptExtraMode = mode;
+  const hit = AI_SYSTEM_PROMPT_PRESETS.find((p) => p.id === mode);
+  if (hit && isBuiltInSystemPromptPresetMode(mode)) {
+    applyingSystemPromptPresetText = true;
+    modelValue.value.chat.systemPromptExtra = hit.text;
+    applyingSystemPromptPresetText = false;
+  }
+}
+
+watch(
+  () => modelValue.value.chat.systemPromptExtra,
+  (text) => {
+    if (applyingSystemPromptPresetText) return;
+    const mode = modelValue.value.chat.systemPromptExtraMode;
+    if (!isBuiltInSystemPromptPresetMode(mode)) return;
+    const preset = AI_SYSTEM_PROMPT_PRESETS.find((p) => p.id === mode);
+    if (preset && preset.text.trim() !== text.trim()) {
+      modelValue.value.chat.systemPromptExtraMode =
+        AI_SYSTEM_PROMPT_PRESET_CUSTOM_ID;
+    }
+  },
+);
+
 const chatProfileToolbarProfiles = computed(
   () => chatProfileDraft.profileSelectItems.value,
 );
@@ -265,6 +353,7 @@ defineExpose({
   finalizeChatProfiles: chatProfileDraft.finalizeBeforeSave,
   initChatProfiles,
   resetCurrentChatProfile: chatProfileDraft.resetCurrentProfileChat,
+  resetAiPageDraft,
 });
 
 </script>
@@ -285,7 +374,6 @@ defineExpose({
     </section>
     <template v-if="modelValue.aiEnabled">
       <section class="aiSection aiSection--compact">
-        <h3 class="aiSectionTitle">配置方案</h3>
         <AiConfigProfileToolbar
           :profiles="chatProfileToolbarProfiles"
           :editing-id="chatProfileToolbarEditingId"
@@ -361,19 +449,17 @@ defineExpose({
           <div class="settingsRowMain settingsRowMain--baseline">
             <span class="settingsLabel short">模型</span>
             <div class="aiChatModelRow">
-              <div class="aiModelToolbar aiChatModelToolbar">
-                <AppCustomSelect
-                  class="aiModelSelect aiChatModelSelect"
-                  :model-value="modelValue.chat.model"
-                  :display-label="chatModelDisplayLabel"
-                  placeholder="选择模型…"
-                  :fixed-top-items="selectListsEmpty"
-                  :scroll-items="chatModelScrollItems"
-                  :fixed-bottom-items="selectListsEmpty"
+              <div
+                class="aiModelToolbar aiChatModelToolbar"
+                @focusin="onChatModelFocusIn"
+              >
+                <ApiEndpointInput
+                  v-model="modelValue.chat.model"
+                  :suggestions="chatModelOptions"
+                  placeholder="输入模型 ID…"
+                  input-class="aiRowStretchInput"
+                  aria-label="对话模型"
                   :scroll-max-height="260"
-                  ariaLabel="对话模型"
-                  @panel-open-change="onChatModelPanelOpenChange"
-                  @update:model-value="modelValue.chat.model = $event"
                 />
                 <AppPullFlashButton
                   ref="chatPullBtnRef"
@@ -403,6 +489,10 @@ defineExpose({
               class="temperatureSlider"
             />
           </div>
+          <p class="settingsHint">
+            控制回答的随机程度：越低越稳定、越贴近检索结果；越高越发散、更有变化。建议
+            0.3～0.7。
+          </p>
         </div>
         <div class="settingsRow">
           <div class="settingsRowMain settingsRowMain--baseline">
@@ -414,9 +504,11 @@ defineExpose({
               :min="256"
               :max="128000"
               integer
-              class="numCompact"
             />
           </div>
+          <p class="settingsHint">
+            单次回复允许生成的最大 Token 数：过小可能会截断长回答，过大则更慢、更耗额度。<br />「智能排版」等长输出可适当调高。
+          </p>
         </div>
         <div class="settingsRow">
           <div class="settingsRowMain settingsRowMain--baseline">
@@ -428,9 +520,65 @@ defineExpose({
               :min="1"
               :max="64"
               integer
-              class="numCompact"
             />
           </div>
+          <p class="settingsHint">
+            发给模型的历史对话保留轮数；数值越大，上下文越完整，但也会占用更多 Token。
+          </p>
+        </div>
+        <div class="settingsRow">
+          <div class="settingsRowMain settingsRowMain--baseline">
+            <span class="settingsLabel"
+              >工具调用轮数（{{ modelValue.chat.maxToolRounds }} 轮）</span
+            >
+            <NumericInput
+              v-model="modelValue.chat.maxToolRounds"
+              :min="MAX_TOOL_ROUNDS_MIN"
+              :max="MAX_TOOL_ROUNDS_MAX"
+              integer
+            />
+          </div>
+          <p class="settingsHint">
+            单次提问内，模型调用检索/读章等工具的最大往返次数；复杂问题可适当调高，过大可能更慢、更耗
+            Token。
+          </p>
+        </div>
+        <div class="settingsRow aiSystemPromptPresetRow">
+          <div class="settingsRowMain settingsRowMain--baseline">
+            <span class="settingsLabel short">附加系统提示词</span>
+            <AppCustomSelect
+              class="aiChatProviderSelect"
+              :model-value="modelValue.chat.systemPromptExtraMode"
+              :display-label="
+                systemPromptPresetDisplayLabel(
+                  modelValue.chat.systemPromptExtraMode,
+                )
+              "
+              placeholder="选择预设…"
+              :fixed-top-items="selectListsEmpty"
+              :scroll-items="systemPromptPresetSelectItems"
+              :fixed-bottom-items="selectListsEmpty"
+              :scroll-max-height="280"
+              ariaLabel="附加系统提示词预设"
+              @update:model-value="onSystemPromptModeSelect"
+            />
+          </div>
+          <p class="settingsHint">
+            分析敏感题材小说时，可一定程度上减少拒答（云端模型仍可能在服务端拒答，本地未审查模型通常更有效。）
+          </p>
+        </div>
+        <div
+          v-if="showSystemPromptExtraEditor"
+          class="settingsRow aiSystemPromptTextareaRow"
+        >
+          <textarea
+            id="ai-system-prompt-extra"
+            v-model="modelValue.chat.systemPromptExtra"
+            class="settingsStretchTextarea settingsStretchTextarea--multiline"
+            rows="6"
+            spellcheck="false"
+            placeholder="可选择预设后再进行修改；留空表示不附加。"
+          />
         </div>
       </section>
 
@@ -456,7 +604,6 @@ defineExpose({
                 v-model="modelValue.chat.tokenPricePerMillion.inputCacheHit"
                 :min="0"
                 :step="0.01"
-                class="aiTokenPriceInput"
                 aria-label="输入缓存命中每百万 Token 价格"
               />
             </div>
@@ -468,7 +615,6 @@ defineExpose({
                 v-model="modelValue.chat.tokenPricePerMillion.inputCacheMiss"
                 :min="0"
                 :step="0.01"
-                class="aiTokenPriceInput"
                 aria-label="输入缓存未命中每百万 Token 价格"
               />
             </div>
@@ -480,7 +626,6 @@ defineExpose({
                 v-model="modelValue.chat.tokenPricePerMillion.output"
                 :min="0"
                 :step="0.01"
-                class="aiTokenPriceInput"
                 aria-label="输出每百万 Token 价格"
               />
             </div>
@@ -534,7 +679,6 @@ defineExpose({
               :min="WORDCLOUD_MAX_WORDS_MIN"
               :max="WORDCLOUD_MAX_WORDS_MAX"
               integer
-              class="numCompact"
             />
           </div>
         </div>
@@ -691,20 +835,20 @@ defineExpose({
 
 
 .aiChatProviderSelect {
-  flex: 1 1 65%;
+  flex: 1 1 0;
   min-width: 0;
   max-width: 100%;
 }
 
 .aiRowStretchInput {
-  flex: 1 1 65%;
+  flex: 1 1 0;
   min-width: 0;
   width: 100%;
   box-sizing: border-box;
 }
 
 .aiRowField {
-  flex: 1 1 65%;
+  flex: 1 1 0;
   min-width: 0;
   max-width: 100%;
 }
@@ -725,9 +869,10 @@ defineExpose({
   width: 100%;
 }
 
-.aiChatModelSelect {
+.aiChatModelToolbar :deep(.apiEndpointInput) {
   flex: 1 1 160px;
   min-width: 0;
+  max-width: 100%;
 }
 
 .aiDataCachePicker {
@@ -743,6 +888,22 @@ defineExpose({
   min-width: 0;
 }
 
+.settingsStretchTextarea--multiline {
+  font-family: inherit;
+  line-height: 1.45;
+}
+
+.aiSystemPromptPresetRow {
+  gap: 6px;
+}
+
+.aiSystemPromptTextareaRow {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  margin-top: -10px;
+}
+
 .settingsPasswordRow {
   display: flex;
   align-items: stretch;
@@ -755,25 +916,12 @@ defineExpose({
   min-width: 0;
 }
 
-.aiMasterHint code {
-  font-size: 11px;
-  padding: 2px 4px;
-  border-radius: 4px;
-  background: var(--panel-elevated, rgba(127, 127, 127, 0.12));
-}
-
 .aiTokenPriceTitle {
   margin-top: 4px;
 }
 
 .aiTokenPriceHint {
   margin: 0;
-}
-
-.aiTokenPriceInput {
-  flex: 1 1 65%;
-  min-width: 0;
-  max-width: 160px;
 }
 
 .settingsHint {
@@ -820,19 +968,9 @@ defineExpose({
   min-width: 0;
 }
 
-.aiModelSelect {
-  flex: 1 1 160px;
-  min-width: 0;
-}
-
 .temperatureSlider {
   width: 150px;
 }
-
-.numCompact {
-  width: 120px;
-}
-
 .quickQRow {
   display: flex;
   align-items: stretch;

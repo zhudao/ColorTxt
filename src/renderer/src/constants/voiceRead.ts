@@ -1,45 +1,67 @@
 import type { VoiceReadEdgeTtsRequest } from "@shared/voiceReadEdgeIpc";
+import { voiceReadEngineSupportsEmotion, voiceReadEmotionActive } from "@shared/voiceReadEmotion";
+import {
+  defaultVoiceReadEngineConfig,
+  engineConfigFingerprint,
+  mergeVoiceReadEngineConfig,
+  type VoiceReadEngineConfig,
+} from "@shared/voiceReadEngineConfig";
+import {
+  getVoiceReadEngineMeta,
+  normalizeVoiceReadEngineId,
+  voiceReadEngineIsConfigured,
+  voiceReadEngineRequiresApiKey,
+  voiceReadEngineSupportsMultiVoiceScheme,
+  type VoiceReadEngineId,
+} from "@shared/voiceReadEngines";
+import {
+  DEFAULT_VOICE_READ_MULTI,
+  DEFAULT_VOICE_READ_SINGLE,
+  normalizeVoiceReadProfileSettingsFromPartial,
+  type VoiceReadDialogueQuoteStyle,
+  type VoiceReadProfileSettings,
+} from "@shared/voiceReadProfiles";
 
-export type VoiceReadEngineId = "system" | "edge" | "dashscope";
+export type { VoiceReadEngineId } from "@shared/voiceReadEngines";
+export type { VoiceReadEngineConfig } from "@shared/voiceReadEngineConfig";
+export type {
+  VoiceReadScheme,
+  VoiceReadDialogueQuoteStyle,
+  VoiceReadSingleVoiceSettings,
+  VoiceReadMultiVoiceSettings,
+} from "@shared/voiceReadProfiles";
 
 /** 与 localStorage / SettingsApplyPayload 对齐的语音朗读设置 */
-export type VoiceReadSettings = {
-  engine: VoiceReadEngineId;
-  /** 系统：voiceURI；Edge：完整 voice id；DashScope：音色名 */
-  voiceId: string;
-  /** 0.5–2，对应 SpeechSynthesis rate 风格 */
-  rate: number;
-  /** 0.5–2，对应 SpeechSynthesis pitch 风格 */
-  pitch: number;
-  dashscopeApiKey: string;
-};
+export type VoiceReadSettings = VoiceReadProfileSettings;
 
-export const defaultVoiceReadSettings: VoiceReadSettings = {
-  engine: "edge",
-  voiceId: "zh-CN-XiaoxiaoNeural",
-  rate: 1,
-  pitch: 1,
-  dashscopeApiKey: "",
-};
+export const VOICE_READ_DIALOGUE_QUOTE_OPTIONS: {
+  id: VoiceReadDialogueQuoteStyle;
+  label: string;
+}[] = [
+  { id: "double", label: "“”" },
+  { id: "single", label: "‘’" },
+  { id: "corner", label: "「」" },
+  { id: "doubleCorner", label: "『』" },
+];
+
+export const VOICE_READ_DIALOGUE_QUOTE_DEFAULTS: VoiceReadDialogueQuoteStyle[] =
+  [...DEFAULT_VOICE_READ_MULTI.dialogueQuoteStyles];
+
+export const defaultVoiceReadSettings: VoiceReadSettings =
+  normalizeVoiceReadProfileSettingsFromPartial(undefined);
 
 export const voiceReadRateMin = 0.5;
 export const voiceReadRateMax = 2;
 export const voiceReadPitchMin = 0.5;
 export const voiceReadPitchMax = 2;
+export const voiceReadVolumeMin = 0;
+export const voiceReadVolumeMax = 1;
+export const voiceReadPauseSentenceMin = 0;
+export const voiceReadPauseSentenceMax = 1200;
+export const voiceReadPauseCommaMin = 0;
+export const voiceReadPauseCommaMax = 600;
 
-/** DashScope qwen3-tts-flash 音色 */
-export const DASHSCOPE_TTS_VOICES: { id: string; label: string }[] = [
-  { id: "Cherry", label: "芊悦 (Cherry)" },
-  { id: "Ethan", label: "晨煦 (Ethan)" },
-  { id: "Nofish", label: "不吃鱼 (Nofish)" },
-  { id: "Ryan", label: "甜茶 (Ryan)" },
-  { id: "Katerina", label: "卡捷琳娜 (Katerina)" },
-  { id: "Dylan", label: "北京-晓东 (Dylan)" },
-  { id: "Sunny", label: "四川-晴儿 (Sunny)" },
-  { id: "Peter", label: "天津-李彼得 (Peter)" },
-  { id: "Rocky", label: "粤语-阿强 (Rocky)" },
-  { id: "Kiki", label: "粤语-阿清 (Kiki)" },
-];
+export { DASHSCOPE_TTS_VOICES } from "@shared/voiceReadDashscopeVoices";
 
 export function clampVoiceReadRate(v: number): number {
   if (!Number.isFinite(v)) return defaultVoiceReadSettings.rate;
@@ -51,51 +73,196 @@ export function clampVoiceReadPitch(v: number): number {
   return Math.max(voiceReadPitchMin, Math.min(voiceReadPitchMax, v));
 }
 
+export function clampVoiceReadPauseSentence(v: number): number {
+  if (!Number.isFinite(v)) return defaultVoiceReadSettings.pauseSentenceMs;
+  return Math.max(
+    voiceReadPauseSentenceMin,
+    Math.min(voiceReadPauseSentenceMax, v),
+  );
+}
+
+export function clampVoiceReadPauseComma(v: number): number {
+  if (!Number.isFinite(v)) return defaultVoiceReadSettings.pauseCommaMs;
+  return Math.max(
+    voiceReadPauseCommaMin,
+    Math.min(voiceReadPauseCommaMax, v),
+  );
+}
+
+export function clampVoiceReadVolume(v: number): number {
+  if (!Number.isFinite(v)) return defaultVoiceReadSettings.volume;
+  return Math.max(voiceReadVolumeMin, Math.min(voiceReadVolumeMax, v));
+}
+
+/** 变更时不应使 TTS 合成缓存失效的字段（如 volume、标点停顿时长）除外 */
+export function voiceReadSettingsSynthesisFingerprint(
+  settings: VoiceReadSettings,
+): string {
+  return [
+    settings.engine,
+    settings.scheme,
+    JSON.stringify(settings.single),
+    JSON.stringify(settings.multi),
+    settings.rate,
+    settings.pitch,
+    settings.emotionEnabled !== false ? "1" : "0",
+    engineConfigFingerprint(settings.engineConfig),
+  ].join("\u0001");
+}
+
+function syncEngineConfigDashscopeKey(
+  engineConfig: VoiceReadEngineConfig,
+  dashscopeApiKey: string,
+): VoiceReadEngineConfig {
+  const key = dashscopeApiKey.trim();
+  if (key) return { ...engineConfig, dashscopeApiKey: key };
+  const { dashscopeApiKey: _drop, ...rest } = engineConfig;
+  return rest;
+}
+
 export function mergeVoiceReadSettings(
   raw: Partial<VoiceReadSettings> | undefined,
 ): VoiceReadSettings {
-  const d = defaultVoiceReadSettings;
-  if (!raw || typeof raw !== "object") return { ...d };
-  const engine: VoiceReadEngineId =
-    raw.engine === "edge" ||
-    raw.engine === "dashscope" ||
-    raw.engine === "system"
-      ? raw.engine
-      : d.engine;
+  const merged = normalizeVoiceReadProfileSettingsFromPartial(raw);
+  const engine = normalizeVoiceReadEngineId(merged.engine, "edge");
+  const rawObj =
+    raw && typeof raw === "object" ? (raw as Partial<VoiceReadSettings>) : {};
+  const engineConfigExplicit = rawObj.engineConfig !== undefined;
+  const legacyDash =
+    typeof rawObj.dashscopeApiKey === "string"
+      ? rawObj.dashscopeApiKey
+      : merged.dashscopeApiKey;
+  const engineConfig = mergeVoiceReadEngineConfig(
+    rawObj.engineConfig ?? merged.engineConfig,
+    engineConfigExplicit ? undefined : legacyDash,
+  );
+  const dashscopeApiKey =
+    engineConfig.dashscopeApiKey?.trim() ?? legacyDash.trim();
   return {
+    ...merged,
     engine,
-    voiceId: typeof raw.voiceId === "string" ? raw.voiceId : d.voiceId,
-    rate: clampVoiceReadRate(typeof raw.rate === "number" ? raw.rate : d.rate),
-    pitch: clampVoiceReadPitch(
-      typeof raw.pitch === "number" ? raw.pitch : d.pitch,
-    ),
-    dashscopeApiKey:
-      typeof raw.dashscopeApiKey === "string"
-        ? raw.dashscopeApiKey
-        : d.dashscopeApiKey,
+    rate: clampVoiceReadRate(merged.rate),
+    pitch: clampVoiceReadPitch(merged.pitch),
+    pauseSentenceMs: clampVoiceReadPauseSentence(merged.pauseSentenceMs),
+    pauseCommaMs: clampVoiceReadPauseComma(merged.pauseCommaMs),
+    volume: clampVoiceReadVolume(merged.volume),
+    dashscopeApiKey,
+    engineConfig: syncEngineConfigDashscopeKey(engineConfig, dashscopeApiKey),
   };
 }
 
-/** 已选 DashScope 但未填写 API 密钥 */
-export function voiceReadDashScopeRequiresApiKey(
-  settings: Pick<VoiceReadSettings, "engine" | "dashscopeApiKey">,
+export function voiceReadSingleVoiceId(settings: VoiceReadSettings): string {
+  return (
+    settings.single.voiceId.trim() || DEFAULT_VOICE_READ_SINGLE.voiceId
+  );
+}
+
+export function voiceReadMultiNarrationVoiceId(
+  settings: VoiceReadSettings,
+): string {
+  return (
+    settings.multi.narrationVoiceId.trim() ||
+    DEFAULT_VOICE_READ_MULTI.narrationVoiceId
+  );
+}
+
+export function voiceReadMultiDialogueVoiceId(
+  settings: VoiceReadSettings,
+): string {
+  return (
+    settings.multi.dialogueVoiceId.trim() ||
+    DEFAULT_VOICE_READ_MULTI.dialogueVoiceId
+  );
+}
+
+export function voiceReadMultiDialogueMaleVoiceId(
+  settings: VoiceReadSettings,
+): string {
+  return (
+    settings.multi.dialogueMaleVoiceId.trim() ||
+    DEFAULT_VOICE_READ_MULTI.dialogueMaleVoiceId
+  );
+}
+
+export function voiceReadMultiDialogueFemaleVoiceId(
+  settings: VoiceReadSettings,
+): string {
+  return (
+    settings.multi.dialogueFemaleVoiceId.trim() ||
+    DEFAULT_VOICE_READ_MULTI.dialogueFemaleVoiceId
+  );
+}
+
+export function voiceReadAiSpeakerRecognitionActive(
+  settings: Pick<
+    VoiceReadSettings,
+    "scheme" | "multi" | "engine" | "engineConfig"
+  >,
+  globalAiEnabled: boolean,
 ): boolean {
-  return settings.engine === "dashscope" && !settings.dashscopeApiKey.trim();
+  return (
+    voiceReadEngineSupportsMultiVoiceScheme(
+      settings.engine,
+      settings.engineConfig,
+    ) &&
+    settings.scheme === "multi" &&
+    settings.multi.aiSpeakerRecognitionEnabled !== false &&
+    globalAiEnabled
+  );
+}
+
+export { voiceReadEngineSupportsEmotion, voiceReadEmotionActive };
+
+export function voiceReadAiEmotionRecognitionActive(
+  settings: Pick<
+    VoiceReadSettings,
+    "scheme" | "multi" | "engine" | "engineConfig" | "emotionEnabled"
+  >,
+  globalAiEnabled: boolean,
+): boolean {
+  return (
+    voiceReadEmotionActive(settings) &&
+    voiceReadAiSpeakerRecognitionActive(settings, globalAiEnabled)
+  );
+}
+
+export function voiceReadDashScopeRequiresApiKey(
+  settings: Pick<VoiceReadSettings, "engine" | "dashscopeApiKey" | "engineConfig">,
+): boolean {
+  if (settings.engine !== "dashscope") return false;
+  return voiceReadEngineRequiresApiKey(settings.engine, settings.engineConfig);
+}
+
+export function voiceReadEngineRequiresCredentials(
+  settings: Pick<VoiceReadSettings, "engine" | "engineConfig">,
+): boolean {
+  return voiceReadEngineRequiresApiKey(settings.engine, settings.engineConfig);
+}
+
+export function voiceReadEngineIsReady(
+  settings: Pick<VoiceReadSettings, "engine" | "engineConfig">,
+): boolean {
+  return voiceReadEngineIsConfigured(settings.engine, settings.engineConfig);
 }
 
 export function voiceReadEngineSupportsPitch(
   engine: VoiceReadEngineId,
 ): boolean {
-  return engine === "system" || engine === "edge";
+  return getVoiceReadEngineMeta(engine).supportsPitch;
 }
 
 export function voiceReadEngineSupportsRate(
   engine: VoiceReadEngineId,
 ): boolean {
-  return engine === "system" || engine === "edge" || engine === "dashscope";
+  return getVoiceReadEngineMeta(engine).supportsRate;
 }
 
-/** Edge 请求用：从 voice id 推断 xml:lang */
+export function voiceReadEngineSupportsPunctuationPauses(
+  engine: VoiceReadEngineId,
+): boolean {
+  return getVoiceReadEngineMeta(engine).supportsPunctuationPauses;
+}
+
 export function inferLangFromEdgeVoiceId(voiceId: string): string {
   const idx = voiceId.indexOf("-");
   if (idx <= 0) return "zh-CN";
@@ -107,8 +274,11 @@ export function inferLangFromEdgeVoiceId(voiceId: string): string {
 export function toVoiceReadEdgeTtsRequest(
   settings: VoiceReadSettings,
   text: string,
+  voiceIdOverride?: string,
 ): VoiceReadEdgeTtsRequest {
-  const voice = settings.voiceId.trim() || "zh-CN-XiaoxiaoNeural";
+  const voice =
+    (voiceIdOverride ?? voiceReadSingleVoiceId(settings)).trim() ||
+    DEFAULT_VOICE_READ_SINGLE.voiceId;
   return {
     text,
     voice,
@@ -117,3 +287,19 @@ export function toVoiceReadEdgeTtsRequest(
     pitch: settings.pitch,
   };
 }
+
+export function effectiveVoiceReadVoiceId(
+  settings: VoiceReadSettings,
+  resolvedVoiceId?: string,
+): string {
+  if (resolvedVoiceId?.trim()) return resolvedVoiceId.trim();
+  return voiceReadSingleVoiceId(settings);
+}
+
+export {
+  defaultSingleVoiceIdForEngine,
+  defaultVoiceIdForEngine,
+  voiceReadEngineSupportsMultiVoiceScheme,
+} from "@shared/voiceReadEngines";
+
+export { defaultVoiceReadEngineConfig };

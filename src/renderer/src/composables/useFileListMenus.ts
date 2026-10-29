@@ -3,6 +3,7 @@ export type FileListMenusEmit = {
   (e: "setFilesCategory", paths: string[], category: string): void;
   (e: "removeFileList", filePaths: string[]): void;
   (e: "open-file-in-new-window", path: string): void;
+  (e: "replaceFilePath", oldPath: string): void;
 };
 
 export function useFileListMenus(
@@ -30,6 +31,7 @@ export function useFileListMenus(
     { id: "remove", label: "移除", type: "danger" as const },
     { id: "sep-1", separator: true },
     { id: "rename", label: "重命名" },
+    { id: "replace", label: "替换文件" },
     { id: "sep-2", separator: true },
     { id: "openInNewWindow", label: "在新窗口中打开" },
     { id: "reveal", label: "在文件管理器中显示" },
@@ -154,6 +156,11 @@ export function useFileListMenus(
     }
     if (actionId === "reveal") {
       void window.colorTxt.showItemInFolder(filePath).catch(() => {});
+    }
+    if (actionId === "replace") {
+      emit("replaceFilePath", filePath);
+      closeFileContextMenu();
+      return;
     }
     if (actionId !== "rename") closeFileContextMenu();
   }

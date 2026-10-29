@@ -2,16 +2,10 @@
 import { computed, ref } from "vue";
 import IconButton from "./IconButton.vue";
 import RangeSlider from "./RangeSlider.vue";
-import playSvg from "../assets/play.svg?raw";
-import pauseSvg from "../assets/pause.svg?raw";
-import prevSvg from "../assets/prev.svg?raw";
-import nextSvg from "../assets/next.svg?raw";
-import refreshSvg from "../assets/refresh.svg?raw";
-import stopSvg from "../assets/stop.svg?raw";
-import speedSvg from "../assets/speed.svg?raw";
 import {
-  voiceReadEngineSupportsPitch,
   voiceReadEngineSupportsRate,
+  voiceReadVolumeMax,
+  voiceReadVolumeMin,
   type VoiceReadEngineId,
 } from "../constants/voiceRead";
 import { icons } from "../icons";
@@ -22,8 +16,9 @@ const props = defineProps<{
   visible: boolean;
   mode: "off" | "playing" | "paused";
   synthesizing?: boolean;
+  synthesizingPhase?: "ai" | "tts" | null;
   toolbarRate: number;
-  toolbarPitch: number;
+  toolbarVolume: number;
   engine: VoiceReadEngineId;
   canPrevLine?: boolean;
   canNextLine?: boolean;
@@ -31,19 +26,21 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   "update:toolbarRate": [v: number];
-  "update:toolbarPitch": [v: number];
+  "update:toolbarVolume": [v: number];
   togglePlayPause: [];
   prevLine: [];
   nextLine: [];
   regenerate: [];
   stop: [];
+  openSpeakSettings: [];
 }>();
 
 const toolbarLayer = ref<ToolbarLayer>("playback");
 
 const rateDisabled = computed(() => !voiceReadEngineSupportsRate(props.engine));
-const pitchDisabled = computed(
-  () => !voiceReadEngineSupportsPitch(props.engine),
+
+const volumePercentLabel = computed(() =>
+  Math.round(props.toolbarVolume * 100).toString(),
 );
 
 const toolbarLocked = computed(() => Boolean(props.synthesizing));
@@ -52,17 +49,19 @@ const playIcon = computed(() => {
   if (props.synthesizing) {
     return `<span class="aiThinkingPulse">${icons.thinkingPulse}</span>`;
   }
-  return props.mode === "playing" ? pauseSvg : playSvg;
+  return props.mode === "playing" ? icons.pause : icons.play;
 });
 const playLabel = computed(() => {
-  if (props.synthesizing) return "合成中";
+  if (props.synthesizing) {
+    return props.synthesizingPhase === "ai" ? "AI 识别中" : "合成中";
+  }
   return props.mode === "playing" ? "暂停" : "播放";
 });
 
 const showSettingsLayer = computed(() => toolbarLayer.value === "settings");
 
 const layerToggleLabel = computed(() =>
-  showSettingsLayer.value ? "切换到朗读控制" : "切换到朗读设置",
+  showSettingsLayer.value ? "朗读控制" : "朗读调节",
 );
 
 function toggleToolbarLayer() {
@@ -92,7 +91,7 @@ function toggleToolbarLayer() {
               <div class="layerPlaybackInner">
                 <IconButton
                   class="layerBtn layerBtn--stagger"
-                  :icon-html="prevSvg"
+                  :icon-html="icons.prev"
                   title="上一行"
                   aria-label="上一行"
                   :disabled="toolbarLocked || !canPrevLine"
@@ -100,7 +99,7 @@ function toggleToolbarLayer() {
                 />
                 <IconButton
                   class="layerBtn layerBtn--stagger"
-                  :icon-html="refreshSvg"
+                  :icon-html="icons.refresh"
                   title="重新合成"
                   aria-label="重新合成"
                   :disabled="toolbarLocked"
@@ -109,7 +108,7 @@ function toggleToolbarLayer() {
                 <div class="playSpacer" aria-hidden="true" />
                 <IconButton
                   class="layerBtn layerBtn--stagger layerBtn--stop"
-                  :icon-html="stopSvg"
+                  :icon-html="icons.stop"
                   title="停止"
                   aria-label="停止"
                   :disabled="toolbarLocked"
@@ -117,7 +116,7 @@ function toggleToolbarLayer() {
                 />
                 <IconButton
                   class="layerBtn layerBtn--stagger"
-                  :icon-html="nextSvg"
+                  :icon-html="icons.next"
                   title="下一行"
                   aria-label="下一行"
                   :disabled="toolbarLocked || !canNextLine"
@@ -126,7 +125,7 @@ function toggleToolbarLayer() {
               </div>
             </div>
 
-            <!-- 朗读设置 -->
+            <!-- 朗读调节 -->
             <div
               class="layer layerSettings"
               :class="{ 'layer--hidden': !showSettingsLayer }"
@@ -148,17 +147,17 @@ function toggleToolbarLayer() {
                 </div>
                 <div class="playSpacer" aria-hidden="true" />
                 <div class="side side--stagger">
-                  <span class="lbl">音调</span>
+                  <span class="lbl">音量</span>
                   <RangeSlider
-                    class="pitchSlider"
-                    :model-value="toolbarPitch"
-                    :min="0.5"
-                    :max="2"
+                    class="volumeSlider"
+                    :model-value="toolbarVolume"
+                    :min="voiceReadVolumeMin"
+                    :max="voiceReadVolumeMax"
                     :step="0.05"
-                    :disabled="toolbarLocked || pitchDisabled"
+                    :disabled="toolbarLocked"
                     :show-percent="false"
-                    aria-label="音调"
-                    @update:model-value="emit('update:toolbarPitch', $event)"
+                    :aria-label="`音量 ${volumePercentLabel}%`"
+                    @update:model-value="emit('update:toolbarVolume', $event)"
                   />
                 </div>
               </div>
@@ -166,12 +165,25 @@ function toggleToolbarLayer() {
           </div>
         </div>
 
+        <button
+          type="button"
+          class="layerToggle layerToggle--left"
+          title="朗读设置"
+          aria-label="朗读设置"
+          @click="emit('openSpeakSettings')"
+        >
+          <span class="layerToggleIcon" v-html="icons.setting" />
+        </button>
+
         <IconButton
           class="playPauseBtn"
           :class="{
             'playPauseBtn--play': !synthesizing && mode !== 'playing',
             'playPauseBtn--pause': !synthesizing && mode === 'playing',
-            'playPauseBtn--synth': synthesizing,
+            'playPauseBtn--synth-ai':
+              synthesizing && synthesizingPhase === 'ai',
+            'playPauseBtn--synth-tts':
+              synthesizing && synthesizingPhase !== 'ai',
           }"
           :icon-html="playIcon"
           :title="playLabel"
@@ -188,7 +200,7 @@ function toggleToolbarLayer() {
           :disabled="toolbarLocked"
           @click="toggleToolbarLayer"
         >
-          <span class="layerToggleIcon" v-html="speedSvg" />
+          <span class="layerToggleIcon" v-html="icons.speed" />
         </button>
       </div>
     </div>
@@ -211,6 +223,7 @@ function toggleToolbarLayer() {
   pointer-events: auto;
   max-width: min(560px, calc(100% - 24px));
   padding-right: 20px;
+  padding-left: 20px;
 }
 
 .barCore {
@@ -369,8 +382,9 @@ function toggleToolbarLayer() {
   height: 48px;
   border-radius: 50%;
   box-shadow: 0 2px 10px color-mix(in srgb, #000 14%, transparent);
-  /* transition: transform 0.16s ease;
-  transform-origin: center center; */
+  transition:
+    background 0.42s cubic-bezier(0.4, 0, 0.2, 1),
+    box-shadow 0.42s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 /* .playPauseBtn.iconBtn:hover {
@@ -404,31 +418,47 @@ function toggleToolbarLayer() {
   background: var(--primary-hover);
 }
 
-.playPauseBtn.iconBtn.playPauseBtn--synth {
-  background: var(--warning);
+.playPauseBtn.iconBtn.playPauseBtn--synth-ai,
+.playPauseBtn.iconBtn.playPauseBtn--synth-tts {
   cursor: default;
 }
 
-.playPauseBtn.iconBtn.playPauseBtn--synth:not(:disabled):hover {
+.playPauseBtn.iconBtn.playPauseBtn--synth-ai {
   background: var(--warning);
 }
 
-.playPauseBtn.iconBtn.playPauseBtn--synth:disabled {
+.playPauseBtn.iconBtn.playPauseBtn--synth-ai:not(:disabled):hover {
+  background: var(--warning);
+}
+
+.playPauseBtn.iconBtn.playPauseBtn--synth-tts {
+  background: var(--primary);
+}
+
+.playPauseBtn.iconBtn.playPauseBtn--synth-tts:not(:disabled):hover {
+  background: var(--primary-hover);
+}
+
+.playPauseBtn.iconBtn.playPauseBtn--synth-ai:disabled,
+.playPauseBtn.iconBtn.playPauseBtn--synth-tts:disabled {
   opacity: 1;
 }
 
-.playPauseBtn.iconBtn.playPauseBtn--synth :deep(.icon) {
+.playPauseBtn.iconBtn.playPauseBtn--synth-ai :deep(.icon),
+.playPauseBtn.iconBtn.playPauseBtn--synth-tts :deep(.icon) {
   color: #ffffff;
 }
 
-.playPauseBtn.iconBtn.playPauseBtn--synth :deep(.aiThinkingPulse) {
+.playPauseBtn.iconBtn.playPauseBtn--synth-ai :deep(.aiThinkingPulse),
+.playPauseBtn.iconBtn.playPauseBtn--synth-tts :deep(.aiThinkingPulse) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   animation: aiThinkingPulseBreathe 1.25s ease-in-out infinite;
 }
 
-.playPauseBtn.iconBtn.playPauseBtn--synth :deep(.aiThinkingPulse svg) {
+.playPauseBtn.iconBtn.playPauseBtn--synth-ai :deep(.aiThinkingPulse svg),
+.playPauseBtn.iconBtn.playPauseBtn--synth-tts :deep(.aiThinkingPulse svg) {
   color: #ffffff;
 }
 
@@ -490,6 +520,12 @@ function toggleToolbarLayer() {
     box-shadow 0.16s ease;
 }
 
+.layerToggle--left {
+  right: auto;
+  left: 0;
+  transform: translate(-50%, -50%);
+}
+
 .layerToggle:not(:disabled):hover {
   background: color-mix(
     in srgb,
@@ -512,12 +548,12 @@ function toggleToolbarLayer() {
   display: block;
 }
 
-.layerToggleIcon :deep(path) {
+.layerToggleIcon :deep(svg path) {
   fill: currentColor;
 }
 
 .rateSlider,
-.pitchSlider {
+.volumeSlider {
   width: 50px;
 }
 </style>

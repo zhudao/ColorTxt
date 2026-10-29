@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="64" height="64">
+  <!-- 两组「粗主标题 + 细副标题」；内容 y=228…796，垂直居中于 512 -->
+  <path fill="currentColor" d="M232 228h560a44 44 0 0 1 0 88H232a44 44 0 0 1 0-88z"/>
+  <path fill="currentColor" d="M232 396h340a20 20 0 0 1 0 40H232a20 20 0 0 1 0-40z"/>
+  <path fill="currentColor" d="M232 588h560a44 44 0 0 1 0 88H232a44 44 0 0 1 0-88z"/>
+  <path fill="currentColor" d="M232 756h340a20 20 0 0 1 0 40H232a20 20 0 0 1 0-40z"/>
+</svg>

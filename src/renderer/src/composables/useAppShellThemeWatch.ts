@@ -2,7 +2,9 @@ import { nextTick, watch, type Ref } from "vue";
 import type ReaderMain from "../components/ReaderMain.vue";
 import {
   APP_DISPLAY_NAME,
+  applyReaderBackgroundForPalettes,
   applyReaderSurfaceToDocument,
+  type ReaderBackgroundState,
   type ReaderSurfacePalette,
 } from "../constants/appUi";
 
@@ -21,8 +23,9 @@ function syncAppTheme(
 export function useAppShellThemeWatch(deps: {
   currentTheme: Ref<string>;
   readerRef: Ref<InstanceType<typeof ReaderMain> | null>;
-  readerSurfaceLight: Ref<ReaderSurfacePalette>;
-  readerSurfaceDark: Ref<ReaderSurfacePalette>;
+  readerSurfaceLight: Ref<ReaderSurfacePalette & { textureId?: string }>;
+  readerSurfaceDark: Ref<ReaderSurfacePalette & { textureId?: string }>;
+  readerBackground: Ref<ReaderBackgroundState>;
   skipNextThemeNativeIpc: Ref<boolean>;
   persistSettings: () => void;
   showChapterCounts: Ref<boolean>;
@@ -37,6 +40,12 @@ export function useAppShellThemeWatch(deps: {
   function applyReaderDocumentAndMonaco(theme: string) {
     syncAppTheme(
       theme,
+      deps.readerSurfaceLight.value,
+      deps.readerSurfaceDark.value,
+    );
+    void applyReaderBackgroundForPalettes(
+      theme,
+      deps.readerBackground.value,
       deps.readerSurfaceLight.value,
       deps.readerSurfaceDark.value,
     );
@@ -55,6 +64,39 @@ export function useAppShellThemeWatch(deps: {
       deps.persistSettings();
     },
     { immediate: true },
+  );
+
+  /** 其它窗口改配色后本窗只更新了内存；CSS 变量（背景/章节标题）需单独灌入 document */
+  watch(
+    () =>
+      [deps.readerSurfaceLight.value, deps.readerSurfaceDark.value] as const,
+    () => {
+      applyReaderSurfaceToDocument(
+        deps.currentTheme.value,
+        deps.readerSurfaceLight.value,
+        deps.readerSurfaceDark.value,
+      );
+      void applyReaderBackgroundForPalettes(
+        deps.currentTheme.value,
+        deps.readerBackground.value,
+        deps.readerSurfaceLight.value,
+        deps.readerSurfaceDark.value,
+      );
+    },
+    { deep: true },
+  );
+
+  watch(
+    () => deps.readerBackground.value,
+    () => {
+      void applyReaderBackgroundForPalettes(
+        deps.currentTheme.value,
+        deps.readerBackground.value,
+        deps.readerSurfaceLight.value,
+        deps.readerSurfaceDark.value,
+      );
+    },
+    { deep: true },
   );
 
   watch(deps.showChapterCounts, () => {

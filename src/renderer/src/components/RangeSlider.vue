@@ -232,7 +232,7 @@ onUnmounted(() => {
 }
 
 .rangeSliderValue {
-  width: 48px;
+  width: 36px;
   text-align: right;
   font-size: 13px;
   color: var(--muted);

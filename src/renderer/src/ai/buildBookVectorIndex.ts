@@ -1,9 +1,7 @@
+import { resolveEmbeddingBatchSize } from "@shared/aiTypes";
 import type { Chapter } from "../chapter";
 import { chunkNovelForAi } from "../utils/aiChunkBook";
 import { getBuiltinEmbeddingBlockMessage } from "./embeddingReady";
-
-/** 与 AI 阅读助手 / 角色侧栏历史实现一致 */
-export const AI_BOOK_VECTOR_INDEX_EMBED_BATCH = 20;
 
 export function isAiVectorIndexAbortError(e: unknown): boolean {
   return e instanceof Error && e.name === "AbortError";
@@ -81,18 +79,19 @@ export async function runAiBookVectorIndexBuild(params: {
   if (abortAsConfigured()) return false;
 
   const texts = drafts.map((d) => d.content);
+  const embedBatchSize = resolveEmbeddingBatchSize(cfg.embedding);
   hooks.onPhase("embedding");
   const embedTotal = Math.max(
     1,
-    Math.ceil(texts.length / AI_BOOK_VECTOR_INDEX_EMBED_BATCH),
+    Math.ceil(texts.length / embedBatchSize),
   );
   let embedCurrent = 0;
   hooks.onEmbedProgress(embedCurrent, embedTotal);
   const allEmb: number[][] = [];
   try {
-    for (let i = 0; i < texts.length; i += AI_BOOK_VECTOR_INDEX_EMBED_BATCH) {
+    for (let i = 0; i < texts.length; i += embedBatchSize) {
       if (abortAsConfigured()) return false;
-      const batch = texts.slice(i, i + AI_BOOK_VECTOR_INDEX_EMBED_BATCH);
+      const batch = texts.slice(i, i + embedBatchSize);
       const emb = await window.colorTxt.ai.embed(batch, embedRequestId);
       allEmb.push(...emb);
       embedCurrent = Math.min(embedTotal, embedCurrent + 1);

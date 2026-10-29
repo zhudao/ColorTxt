@@ -1,12 +1,27 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  toRef,
+  watch,
+} from "vue";
+import { syncDismissibleOverlay } from "../utils/dismissibleOverlayStack";
 
-type ContextMenuItem = {
+defineOptions({ inheritAttrs: false });
+
+export type ContextMenuItem = {
   id: string;
   label?: string;
   type?: "primary" | "success" | "warning" | "danger";
   separator?: boolean;
   disabled?: boolean;
+  /** 与 `icons.*` 一致，渲染在标签左侧 */
+  iconHtml?: string;
+  /** 子菜单项；有 children 时父项不触发 select */
+  children?: readonly ContextMenuItem[];
 };
 
 const props = withDefaults(
@@ -27,12 +42,15 @@ const props = withDefaults(
     footerTopPx?: number | null;
     /** `placement === 'aboveFooterMouseX'` 时：打开菜单时的指针 `clientX` */
     pointerXPx?: number | null;
+    /** 叠放层级；默认高于嵌套 AppModal */
+    zIndex?: number;
   }>(),
   {
     placement: "point",
     footerTopPx: null,
     pointerXPx: null,
     excludeCloseWithin: undefined,
+    zIndex: undefined,
   },
 );
 
@@ -41,9 +59,16 @@ const emit = defineEmits<{
   select: [id: string];
 }>();
 
+syncDismissibleOverlay(toRef(props, "open"));
+
 const menuRef = ref<HTMLElement | null>(null);
 const posX = ref(0);
 const posY = ref(0);
+const openSubId = ref<string | null>(null);
+const flyoutSide = ref<"right" | "left">("right");
+const flyoutElById = new Map<string, HTMLElement>();
+
+const zIndexStyle = computed(() => props.zIndex ?? 12000);
 
 function itemClass(item: ContextMenuItem) {
   const c = ["appShellMenuItem"];
@@ -51,9 +76,55 @@ function itemClass(item: ContextMenuItem) {
   return c.join(" ");
 }
 
-function onMenuItemClick(item: ContextMenuItem) {
+function hasChildren(item: ContextMenuItem): boolean {
+  return Array.isArray(item.children);
+}
+
+function onLeafClick(item: ContextMenuItem) {
   if (item.disabled) return;
   emit("select", item.id);
+}
+
+function openSubmenu(item: ContextMenuItem) {
+  if (item.disabled || !hasChildren(item)) return;
+  openSubId.value = item.id;
+  void nextTick(() => layoutFlyout(item.id));
+}
+
+function closeSubmenu() {
+  openSubId.value = null;
+}
+
+function setFlyoutEl(id: string, el: unknown) {
+  if (el instanceof HTMLElement) {
+    flyoutElById.set(id, el);
+  } else {
+    flyoutElById.delete(id);
+  }
+}
+
+function layoutFlyout(id: string) {
+  const flyout = flyoutElById.get(id);
+  const menu = menuRef.value;
+  if (!flyout || !menu) return;
+  const menuRect = menu.getBoundingClientRect();
+  const margin = 8;
+  const preferRight = menuRect.right + 8 + flyout.offsetWidth <= window.innerWidth - margin;
+  flyoutSide.value = preferRight ? "right" : "left";
+  flyout.style.transform = "";
+  void nextTick(() => {
+    const r = flyout.getBoundingClientRect();
+    let dy = 0;
+    if (r.bottom > window.innerHeight - margin) {
+      dy = window.innerHeight - margin - r.bottom;
+    }
+    if (r.top + dy < margin) {
+      dy = margin - r.top;
+    }
+    if (dy !== 0) {
+      flyout.style.transform = `translateY(${dy}px)`;
+    }
+  });
 }
 
 function clampPosition() {
@@ -98,7 +169,11 @@ watch(
       props.pointerXPx,
     ] as const,
   async ([open]) => {
-    if (!open) return;
+    if (!open) {
+      closeSubmenu();
+      return;
+    }
+    closeSubmenu();
     if (props.placement === "point") {
       posX.value = props.x;
       posY.value = props.y;
@@ -128,50 +203,124 @@ function onWindowInvalidate() {
 }
 
 onMounted(() => {
-  document.addEventListener("pointerdown", onDocPointerDown);
+  document.addEventListener("pointerdown", onDocPointerDown, true);
   window.addEventListener("resize", onWindowInvalidate);
   window.addEventListener("blur", onWindowInvalidate);
 });
 
 onBeforeUnmount(() => {
-  document.removeEventListener("pointerdown", onDocPointerDown);
+  document.removeEventListener("pointerdown", onDocPointerDown, true);
   window.removeEventListener("resize", onWindowInvalidate);
   window.removeEventListener("blur", onWindowInvalidate);
 });
 </script>
 
 <template>
-  <div
-    v-if="open"
-    ref="menuRef"
-    class="contextMenu appShellMenuPanel"
-    role="menu"
-    :style="{
-      left: `${posX}px`,
-      top: `${posY}px`,
-      minWidth: `${minWidth ?? 140}px`,
-    }"
-    @click.stop
-  >
-    <template v-for="item in items" :key="item.id">
-      <div v-if="item.separator" class="appShellMenuDivider" role="separator" />
-      <button
-        v-else
-        type="button"
-        :class="itemClass(item)"
-        role="menuitem"
-        :disabled="item.disabled"
-        @click="onMenuItemClick(item)"
-      >
-        {{ item.label }}
-      </button>
-    </template>
-  </div>
+  <Teleport to="body">
+    <div
+      v-if="open"
+      ref="menuRef"
+      v-bind="$attrs"
+      class="contextMenu appShellMenuPanel"
+      role="menu"
+      :style="{
+        left: `${posX}px`,
+        top: `${posY}px`,
+        minWidth: `${minWidth ?? 140}px`,
+        zIndex: zIndexStyle,
+      }"
+      @click.stop
+      @contextmenu.prevent
+      @pointerdown.stop
+    >
+      <template v-for="item in items" :key="item.id">
+        <div v-if="item.separator" class="appShellMenuDivider" role="separator" />
+        <div
+          v-else-if="hasChildren(item)"
+          class="appShellMenuSubWrap"
+          @mouseenter="openSubmenu(item)"
+          @mouseleave="closeSubmenu"
+        >
+          <button
+            type="button"
+            :class="itemClass(item)"
+            role="menuitem"
+            aria-haspopup="menu"
+            :aria-expanded="openSubId === item.id"
+            :disabled="item.disabled"
+            @click="openSubmenu(item)"
+          >
+            <span
+              v-if="item.iconHtml"
+              class="appShellMenuItemPrefix"
+              aria-hidden="true"
+              v-html="item.iconHtml"
+            />
+            {{ item.label }}
+            <span class="appShellMenuSubChevron" aria-hidden="true">›</span>
+          </button>
+          <div
+            v-show="openSubId === item.id && !item.disabled"
+            :ref="(el) => setFlyoutEl(item.id, el)"
+            class="appShellMenuFlyout"
+            :class="
+              flyoutSide === 'left'
+                ? 'appShellMenuFlyout--left'
+                : 'appShellMenuFlyout--right'
+            "
+            role="menu"
+            @click.stop
+          >
+            <div class="appShellMenuFlyoutList">
+              <template v-for="child in item.children" :key="child.id">
+                <div
+                  v-if="child.separator"
+                  class="appShellMenuFlyoutDivider"
+                  role="separator"
+                />
+                <button
+                  v-else
+                  type="button"
+                  class="appShellMenuFlyoutItem"
+                  role="menuitem"
+                  :disabled="child.disabled"
+                  @click="onLeafClick(child)"
+                >
+                  <span class="appShellMenuFlyoutLabel">{{ child.label }}</span>
+                </button>
+              </template>
+            </div>
+          </div>
+        </div>
+        <button
+          v-else
+          type="button"
+          :class="itemClass(item)"
+          role="menuitem"
+          :disabled="item.disabled"
+          @click="onLeafClick(item)"
+        >
+          <span
+            v-if="item.iconHtml"
+            class="appShellMenuItemPrefix"
+            aria-hidden="true"
+            v-html="item.iconHtml"
+          />
+          {{ item.label }}
+        </button>
+      </template>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
 .contextMenu {
   position: fixed;
-  z-index: 7000;
+  /* 默认高于嵌套 AppModal（6000+）；全屏编辑等场景可经 zIndex 再抬高 */
+  z-index: 12000;
+}
+
+.contextMenu :deep(.appShellMenuItemPrefix svg path) {
+  fill: currentColor;
 }
 </style>

@@ -145,17 +145,6 @@ function exportImageRelForBinaryId(
   return rel;
 }
 
-function pushImageLineForBinaryId(
-  href: string,
-  binaryById: Map<string, ArrayBuffer>,
-  idToContentType: Map<string, string>,
-  ctx: Fb2ImageCtx,
-  out: string[],
-): void {
-  const rel = exportImageRelForBinaryId(href, binaryById, idToContentType, ctx);
-  if (rel) out.push(formatMdBlockImage(rel));
-}
-
 function flushAccParagraph(acc: { text: string }, out: string[]): void {
   const raw = acc.text.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
   acc.text = "";
@@ -202,21 +191,27 @@ function walkFb2Inline(
               );
               const label = resolveLinkIconVisibleLabel(child, anchor);
               const hoverTip = resolveLinkIconHoverTip(child, anchor);
-              const slash = hoverTip.indexOf("/");
               appendFb2MdLink(acc, ctx, tid, {
                 label,
                 iconRel: rel ?? undefined,
-                title: slash >= 0 ? hoverTip.slice(0, slash) : hoverTip,
-                alt: slash >= 0 ? hoverTip.slice(slash + 1) : undefined,
+                title: hoverTip,
               });
               continue;
             }
           }
         }
       }
-      flushAccParagraph(acc, out);
       const href = getFb2ImageHref(child);
-      pushImageLineForBinaryId(href, binaryById, idToContentType, ctx, out);
+      const rel = exportImageRelForBinaryId(
+        href,
+        binaryById,
+        idToContentType,
+        ctx,
+      );
+      if (rel) {
+        const alt = child.getAttribute("alt")?.trim() ?? "";
+        acc.text += formatMdBlockImage(rel, alt);
+      }
       continue;
     }
     if (tag === "a") {
@@ -239,12 +234,10 @@ function walkFb2Inline(
           );
           const label = resolveLinkIconVisibleLabel(onlyImage, child);
           const hoverTip = resolveLinkIconHoverTip(onlyImage, child);
-          const slash = hoverTip.indexOf("/");
           appendFb2MdLink(acc, ctx, tid, {
             label,
             iconRel: rel ?? undefined,
-            title: slash >= 0 ? hoverTip.slice(0, slash) : hoverTip,
-            alt: slash >= 0 ? hoverTip.slice(slash + 1) : undefined,
+            title: hoverTip,
           });
           continue;
         }

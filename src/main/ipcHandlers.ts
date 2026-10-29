@@ -20,8 +20,14 @@ import {
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { getFonts } from "font-list";
+import {
+  familyNamesToRawFaces,
+  mergeLegacyFamilyNames,
+  type RawSystemFontFace,
+} from "@shared/systemFontFace";
+import { listRawSystemFontFaces } from "./systemFontFaces";
 import iconv from "iconv-lite";
 import { detectTextFileEncoding } from "./detectTextEncoding";
 import { EBOOK_DOT_EXTENSIONS } from "@shared/ebookExtensions";
@@ -46,12 +52,35 @@ import {
 } from "./globalShortcuts";
 import { registerAiIpcHandlers } from "./registerAiIpc";
 import { registerSecretsIpcHandlers } from "./registerSecretsIpc";
+import { registerTextConvertIpcHandlers } from "./registerTextConvertIpc";
 import {
   copyImageToAbsolutePath,
   migrateCharacterPortraitCacheRoot,
-} from "./characterPortraitFs";
+} from "./ai/tools/characterPortraitFs";
 import { synthesizeEdgeTtsMp3 } from "./voiceReadEdgeTts";
 import type { VoiceReadEdgeTtsRequest } from "@shared/voiceReadEdgeIpc";
+import { VOICE_READ_EMOTION_AUTO } from "@shared/voiceReadEmotion";
+import type { VoiceReadAttributeSpeakersResult } from "@shared/voiceReadSpeakerIpc";
+import type { VoiceReadQuoteAttribution } from "@shared/voiceReadSpeakerIpc";
+import { loadAiConfig } from "./ai/infra/config";
+import { readActiveChatEndpoint } from "@shared/aiEndpointProfiles";
+import { attributeVoiceReadSpeakers } from "./ai/voiceReadSpeaker";
+import { registerVoiceReadIpcHandlers } from "./voiceRead/registerVoiceReadIpc";
+import { registerBookSourceIpcHandlers } from "./bookSource/registerBookSourceIpc";
+import { registerWebDavIpcHandlers } from "./webdav/registerWebDavIpc";
+import { registerDictionaryIpcHandlers } from "./dictionary/registerDictionaryIpc";
+import { registerTranslationIpcHandlers } from "./translation/registerTranslationIpc";
+import { registerReaderBackgroundIpc } from "./readerBackgroundIpc";
+import { registerEyedropperIpc } from "./eyedropper";
+import { registerStealthReaderIpc } from "./stealthReader";
+import { registerStealthSettingsIpc, setStealthSettingsClosedHandler } from "./stealthSettingsWindow";
+import { resolveTerminalDefaultFontFace } from "./terminalFont";
+import { createFindBookDesktopShortcut } from "./findBookLaunch";
+import {
+  focusOrOpenFindBookWindow,
+  focusOrOpenMainReaderWindow,
+  openTxtInMainWindow,
+} from "./openTxtInMainWindow";
 
 type TxtFileItem = { name: string; path: string; size: number };
 type DirListScanProgress = (item: { name: string; path: string }) => void;
@@ -60,6 +89,7 @@ function isTxtOrEbookFileName(fileName: string): boolean {
   const lower = fileName.toLowerCase();
   if (lower.endsWith(".txt")) return true;
   if (lower.endsWith(".md")) return true;
+  if (lower.endsWith(".ctz") || lower.endsWith(".ctzx")) return true;
   return EBOOK_DOT_EXTENSIONS.some((ext) => lower.endsWith(ext));
 }
 
@@ -67,9 +97,52 @@ type RegisterMainIpcHandlersOptions = {
   createWindow: CreateMainWindow;
   shouldRestoreSessionByWindowId: Map<number, boolean>;
   pendingOpenTxtByWindowId: Map<number, string>;
+  findBookWindowByWindowId: Map<number, boolean>;
+  findBookInitialTabByWindowId: Map<number, "bookshelf" | "search">;
+  mainWindowFocusState: { lastId: number | null };
 };
 
-let cachedSystemFonts: string[] | null = null;
+let cachedSystemFonts: RawSystemFontFace[] | null = null;
+
+const FONT_FILE_URL_MAP_CONCURRENCY = 24;
+
+/** Electron 禁止渲染进程 file:// 加载字体，改为 colortxt-local:// */
+async function mapFontFileUrlsForRenderer(
+  faces: RawSystemFontFace[],
+): Promise<RawSystemFontFace[]> {
+  const out: RawSystemFontFace[] = new Array(faces.length);
+  let next = 0;
+
+  async function mapOne(face: RawSystemFontFace): Promise<RawSystemFontFace> {
+    const rawUrl = face.fileUrl?.trim();
+    if (!rawUrl || !/^file:/i.test(rawUrl)) return face;
+    try {
+      const absPath = fileURLToPath(rawUrl);
+      const mapped = await registerLocalFileForColortxtUrl(absPath);
+      if (mapped) {
+        return { ...face, fileUrl: mapped, filePath: absPath };
+      }
+      const { fileUrl: _drop, ...rest } = face;
+      return { ...rest, filePath: absPath };
+    } catch {
+      const { fileUrl: _drop, ...rest } = face;
+      return rest;
+    }
+  }
+
+  async function worker(): Promise<void> {
+    while (true) {
+      const i = next++;
+      if (i >= faces.length) return;
+      out[i] = await mapOne(faces[i]!);
+    }
+  }
+
+  const workers = Math.min(FONT_FILE_URL_MAP_CONCURRENCY, faces.length);
+  if (workers <= 0) return [];
+  await Promise.all(Array.from({ length: workers }, () => worker()));
+  return out;
+}
 
 /**
  * 迭代遍历子目录，避免符号链接 / 目录联接成环导致递归栈溢出；
@@ -173,6 +246,9 @@ export function registerMainIpcHandlers(
     createWindow,
     shouldRestoreSessionByWindowId,
     pendingOpenTxtByWindowId,
+    findBookWindowByWindowId,
+    findBookInitialTabByWindowId,
+    mainWindowFocusState,
   } = options;
   const activeStreamBySenderId = new Map<
     number,
@@ -331,6 +407,44 @@ export function registerMainIpcHandlers(
     createWindow({ openTxtPath: targetPath });
   });
 
+  ipcMain.on("window:openFindBook", () => {
+    focusOrOpenFindBookWindow({
+      createWindow,
+      findBookWindowByWindowId,
+    });
+  });
+
+  /** 始终新建找书窗（默认书架），用于找书「更多 → 新窗口」 */
+  ipcMain.on("window:newFindBook", () => {
+    createWindow({ openFindBook: true, findBookInitialTab: "bookshelf" });
+  });
+
+  ipcMain.handle("findBook:createDesktopShortcut", async () => {
+    return createFindBookDesktopShortcut();
+  });
+
+  ipcMain.handle("window:focusOrOpenMain", () => {
+    focusOrOpenMainReaderWindow({
+      createWindow,
+      findBookWindowByWindowId,
+      mainWindowFocusState,
+    });
+  });
+
+  ipcMain.handle("window:openFileInMain", (_evt, filePath: unknown) => {
+    const resolved =
+      typeof filePath === "string" && filePath.trim()
+        ? filePath.trim()
+        : null;
+    if (!resolved) return;
+    openTxtInMainWindow({
+      filePath: resolved,
+      createWindow,
+      findBookWindowByWindowId,
+      mainWindowFocusState,
+    });
+  });
+
   ipcMain.handle("window:toggleDevTools", (evt) => {
     const win = BrowserWindow.fromWebContents(evt.sender);
     if (!win || win.isDestroyed()) return;
@@ -350,6 +464,8 @@ export function registerMainIpcHandlers(
       evt.returnValue = {
         shouldRestoreSession: false,
         hasPendingOpenTxt: false,
+        isFindBookWindow: false,
+        findBookInitialTab: "search" as const,
       };
       return;
     }
@@ -357,6 +473,11 @@ export function registerMainIpcHandlers(
       shouldRestoreSession:
         shouldRestoreSessionByWindowId.get(win.id) === true,
       hasPendingOpenTxt: pendingOpenTxtByWindowId.has(win.id),
+      isFindBookWindow: findBookWindowByWindowId.get(win.id) === true,
+      findBookInitialTab:
+        findBookInitialTabByWindowId.get(win.id) === "bookshelf"
+          ? ("bookshelf" as const)
+          : ("search" as const),
     };
   });
 
@@ -583,6 +704,37 @@ export function registerMainIpcHandlers(
     return { ok: true as const };
   });
 
+  /** 递归列出目录下所有文件（相对路径，posix `/`）；目录不存在则返回空列表 */
+  ipcMain.handle("fs:listFilesRecursive", async (_evt, dirPath: string) => {
+    const root = path.resolve(String(dirPath ?? ""));
+    const files: string[] = [];
+    async function walk(abs: string, relPosix: string) {
+      let entries: import("node:fs").Dirent[];
+      try {
+        entries = await readdir(abs, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const e of entries) {
+        const childAbs = path.join(abs, e.name);
+        const childRel = relPosix ? `${relPosix}/${e.name}` : e.name;
+        if (e.isDirectory()) {
+          await walk(childAbs, childRel);
+        } else if (e.isFile()) {
+          files.push(childRel.replace(/\\/g, "/"));
+        }
+      }
+    }
+    try {
+      const st = await stat(root);
+      if (!st.isDirectory()) return { ok: true as const, files: [] as string[] };
+    } catch {
+      return { ok: true as const, files: [] as string[] };
+    }
+    await walk(root, "");
+    return { ok: true as const, files };
+  });
+
   ipcMain.handle(
     "fs:renamePath",
     async (_evt, fromPath: string, toPath: string) => {
@@ -663,20 +815,68 @@ export function registerMainIpcHandlers(
     return { dirPath, files };
   });
 
-  ipcMain.handle("fonts:listSystemFonts", async () => {
-    if (cachedSystemFonts) return cachedSystemFonts;
+  ipcMain.handle(
+    "fonts:listSystemFonts",
+    async (_evt, opts?: { force?: boolean }) => {
+      if (
+        !opts?.force &&
+        cachedSystemFonts &&
+        cachedSystemFonts.length > 0
+      ) {
+        return cachedSystemFonts;
+      }
+      if (opts?.force) cachedSystemFonts = null;
 
+      try {
+        const faces = await listRawSystemFontFaces();
+        // font-list 能看到 WPF 常漏掉的 GDI 中文字体（方正 / 华康等）
+        let legacyNames: string[] = [];
+        try {
+          legacyNames = await getFonts({ disableQuoting: true });
+        } catch (err) {
+          console.warn("[fonts] getFonts fallback failed", err);
+        }
+        const merged =
+          faces.length > 0
+            ? mergeLegacyFamilyNames(faces, legacyNames)
+            : familyNamesToRawFaces(legacyNames);
+        if (merged.length === 0) return [];
+        cachedSystemFonts = await mapFontFileUrlsForRenderer(merged);
+        return cachedSystemFonts;
+      } catch (err) {
+        console.warn("[fonts] listSystemFonts failed", err);
+        return [];
+      }
+    },
+  );
+
+  ipcMain.handle("fonts:getTerminalDefaultFace", async () => {
     try {
-      const fonts = await getFonts({ disableQuoting: true });
-      cachedSystemFonts = Array.from(new Set(fonts)).sort((a, b) =>
-        a.localeCompare(b, "zh-Hans-CN"),
-      );
+      return await resolveTerminalDefaultFontFace();
     } catch {
-      cachedSystemFonts = [];
+      return null;
     }
-
-    return cachedSystemFonts;
   });
+
+  /** 重启后把 pin 缓存里的绝对路径重新注册为 colortxt-local URL */
+  ipcMain.handle(
+    "fonts:registerFontFilePaths",
+    async (_evt, paths: unknown) => {
+      const list = Array.isArray(paths)
+        ? paths.filter((p): p is string => typeof p === "string" && p.trim() !== "")
+        : [];
+      const out: Record<string, string> = {};
+      for (const raw of list) {
+        try {
+          const mapped = await registerLocalFileForColortxtUrl(raw.trim());
+          if (mapped) out[raw.trim()] = mapped;
+        } catch {
+          /* skip missing files */
+        }
+      }
+      return out;
+    },
+  );
 
   ipcMain.on("window:setTitle", (evt, title: string) => {
     const win = BrowserWindow.fromWebContents(evt.sender);
@@ -688,6 +888,12 @@ export function registerMainIpcHandlers(
     if (!win) return false;
     win.setFullScreen(Boolean(value));
     return win.isFullScreen();
+  });
+
+  ipcMain.handle("window:getContentBounds", (evt) => {
+    const win = BrowserWindow.fromWebContents(evt.sender);
+    if (!win || win.isDestroyed()) return null;
+    return win.getContentBounds();
   });
 
   ipcMain.handle("shortcut:getGlobalToggle", () => {
@@ -861,7 +1067,7 @@ export function registerMainIpcHandlers(
         typeof o.pitch === "number" && Number.isFinite(o.pitch) ? o.pitch : 1;
       const req: VoiceReadEdgeTtsRequest = { text, voice, lang, rate, pitch };
       try {
-        const mp3 = await synthesizeEdgeTtsMp3(req);
+        const { data: mp3 } = await synthesizeEdgeTtsMp3(req);
         return { ok: true, mp3 };
       } catch (e) {
         return {
@@ -872,6 +1078,109 @@ export function registerMainIpcHandlers(
     },
   );
 
+function unknownQuoteAttributions(
+  count: number,
+): VoiceReadQuoteAttribution[] {
+  return Array.from({ length: count }, () => ({
+    kind: "unknown" as const,
+    speaker: null,
+    emotion: VOICE_READ_EMOTION_AUTO,
+  }));
+}
+
+  ipcMain.handle(
+    "voiceRead:attributeSpeakers",
+    async (_evt, raw: unknown): Promise<VoiceReadAttributeSpeakersResult> => {
+      if (!raw || typeof raw !== "object") {
+        return { ok: false, error: "无效请求" };
+      }
+      const o = raw as Record<string, unknown>;
+      const line = typeof o.line === "string" ? o.line : "";
+      const dialogueTexts = Array.isArray(o.dialogueTexts)
+        ? o.dialogueTexts.filter((t): t is string => typeof t === "string")
+        : [];
+      const rosterRaw = Array.isArray(o.roster) ? o.roster : [];
+      const roster: { displayName: string; aliases: string[] }[] = [];
+      for (const row of rosterRaw) {
+        if (!row || typeof row !== "object") continue;
+        const r = row as Record<string, unknown>;
+        const displayName =
+          typeof r.displayName === "string" ? r.displayName.trim() : "";
+        if (!displayName) continue;
+        const aliases = Array.isArray(r.aliases)
+          ? r.aliases.filter((a): a is string => typeof a === "string")
+          : [];
+        roster.push({ displayName, aliases });
+      }
+      const includeEmotion = o.includeEmotion === true;
+      const contextBefore = Array.isArray(o.contextBefore)
+        ? o.contextBefore.filter((t): t is string => typeof t === "string")
+        : [];
+      const contextAfter = Array.isArray(o.contextAfter)
+        ? o.contextAfter.filter((t): t is string => typeof t === "string")
+        : [];
+      if (!line.trim() || dialogueTexts.length === 0) {
+        return {
+          ok: true,
+          quotes: unknownQuoteAttributions(dialogueTexts.length),
+          narrationEmotion: VOICE_READ_EMOTION_AUTO,
+        };
+      }
+      try {
+        const cfg = await loadAiConfig();
+        if (!cfg.aiEnabled) {
+          return {
+            ok: true,
+            quotes: unknownQuoteAttributions(dialogueTexts.length),
+            narrationEmotion: VOICE_READ_EMOTION_AUTO,
+          };
+        }
+        const chat = readActiveChatEndpoint(cfg);
+        if (!chat.baseUrl.trim() || !chat.model.trim()) {
+          return {
+            ok: true,
+            quotes: unknownQuoteAttributions(dialogueTexts.length),
+            narrationEmotion: VOICE_READ_EMOTION_AUTO,
+          };
+        }
+        const { quotes, narrationEmotion, tokenUsage } =
+          await attributeVoiceReadSpeakers(chat, {
+            line,
+            dialogueTexts,
+            roster,
+            includeEmotion,
+            contextBefore,
+            contextAfter,
+          });
+        return {
+          ok: true,
+          quotes,
+          narrationEmotion,
+          tokenUsage,
+          tokenUsageAvailable: tokenUsage != null,
+        };
+      } catch (e) {
+        return {
+          ok: false,
+          error: e instanceof Error ? e.message : String(e),
+        };
+      }
+    },
+  );
+
   registerAiIpcHandlers();
+  registerVoiceReadIpcHandlers();
+  registerBookSourceIpcHandlers();
   registerSecretsIpcHandlers();
+  registerTextConvertIpcHandlers();
+  registerWebDavIpcHandlers();
+  registerDictionaryIpcHandlers();
+  registerTranslationIpcHandlers();
+  registerReaderBackgroundIpc();
+  registerEyedropperIpc();
+  registerStealthReaderIpc();
+  setStealthSettingsClosedHandler(() => {
+    resumeGlobalShortcutsAfterRecording();
+  });
+  registerStealthSettingsIpc();
 }

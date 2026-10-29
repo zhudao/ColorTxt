@@ -3,7 +3,9 @@ export function countCharsForLine(line: string): number {
   return line.replace(/\s+/g, "").length;
 }
 
-export function formatCharCount(n: number): string {
+/** exact 为 true 时始终显示具体数值（如 `23,123 字`），否则 ≥1 万用「万字」简写 */
+export function formatCharCount(n: number, exact = false): string {
+  if (exact) return `${Math.max(0, Math.floor(n)).toLocaleString("en-US")} 字`;
   if (n >= 10000) return `${(n / 10000).toFixed(1).replace(/\.0$/, "")} 万字`;
   return `${n} 字`;
 }

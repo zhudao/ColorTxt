@@ -1,12 +1,39 @@
 <script setup lang="ts">
+import { onMounted, onUnmounted } from "vue";
 import {
+  appToast,
   appToastItems,
   dismissAppToast,
   type AppToastItem,
+  type AppToastKind,
 } from "../services/appToast";
+import { APP_TOAST_Z_INDEX } from "../constants/appUi";
 import { icons } from "../icons";
 
-function iconHtml(kind: AppToastItem["kind"]): string {
+// 对齐 Android Toast：toast=LENGTH_SHORT(~2s)、longToast=LENGTH_LONG(~3.5s)，与行数无关
+const SHORT_TOAST_DURATION_MS = 2000;
+const LONG_TOAST_DURATION_MS = 3500;
+
+let offBookSourceToast: (() => void) | null = null;
+
+onMounted(() => {
+  offBookSourceToast = window.colorTxt.onBookSourceToast((ev) => {
+    const msg = ev.message?.trim();
+    if (!msg) return;
+    // 对齐 Legado：java.toast 无类型/图标
+    appToast(msg, {
+      kind: "none",
+      duration: ev.long ? LONG_TOAST_DURATION_MS : SHORT_TOAST_DURATION_MS,
+    });
+  });
+});
+
+onUnmounted(() => {
+  offBookSourceToast?.();
+  offBookSourceToast = null;
+});
+
+function iconHtml(kind: AppToastKind): string {
   switch (kind) {
     case "success":
       return icons.success;
@@ -17,15 +44,21 @@ function iconHtml(kind: AppToastItem["kind"]): string {
     case "primary":
       return icons.info;
     case "info":
-    default:
       return icons.info;
+    case "none":
+    default:
+      return "";
   }
+}
+
+function showIcon(kind: AppToastItem["kind"]): boolean {
+  return kind !== "none";
 }
 </script>
 
 <template>
   <Teleport to="body">
-    <div class="appToastHost" aria-live="polite">
+    <div class="appToastHost" aria-live="polite" :style="{ zIndex: APP_TOAST_Z_INDEX }">
       <TransitionGroup name="appToast" tag="div" class="appToastStack">
         <div
           v-for="t in appToastItems"
@@ -34,10 +67,12 @@ function iconHtml(kind: AppToastItem["kind"]): string {
           :class="[
             `appToastItem--${t.kind}`,
             { 'appToastItem--closable': t.showClose },
+            { 'appToastItem--noIcon': !showIcon(t.kind) },
           ]"
           role="status"
         >
           <span
+            v-if="showIcon(t.kind)"
             class="appToastIcon"
             aria-hidden="true"
             v-html="iconHtml(t.kind)"
@@ -68,7 +103,6 @@ function iconHtml(kind: AppToastItem["kind"]): string {
   top: 0;
   left: 0;
   right: 0;
-  z-index: 5998;
   display: flex;
   justify-content: center;
   padding: 12px 12px 0;
@@ -87,11 +121,11 @@ function iconHtml(kind: AppToastItem["kind"]): string {
 .appToastItem {
   pointer-events: auto;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: flex-start;
-  gap: 10px;
+  gap: 4px;
   width: auto;
-  max-width: min(480px, 100%);
+  max-width: min(520px, 100%);
   box-sizing: border-box;
   padding: 4px 10px;
   border-radius: 4px;
@@ -100,10 +134,17 @@ function iconHtml(kind: AppToastItem["kind"]): string {
     0 4px 18px color-mix(in srgb, var(--fg) 12%, transparent),
     0 0 1px color-mix(in srgb, var(--fg) 8%, transparent);
   border: 1px solid var(--border);
+  color: var(--fg);
 }
 
 .appToastItem--closable {
   padding-right: 4px;
+}
+
+.appToastItem--noIcon {
+  /* 无图标时略收紧左右，多行列表更像纯文本条 */
+  padding-left: 12px;
+  padding-right: 12px;
 }
 
 .appToastIcon {
@@ -132,8 +173,11 @@ function iconHtml(kind: AppToastItem["kind"]): string {
   font-size: 13px;
   line-height: 1.5;
   word-break: break-word;
+  /* 对齐 Android Toast / 书源 \n 换行（如「当前设置」列表），多行每行水平居中 */
+  white-space: pre-line;
   padding-top: 3px;
   padding-bottom: 2px;
+  text-align: center;
 }
 
 .appToastItem--closable .appToastMsg {
@@ -210,10 +254,15 @@ function iconHtml(kind: AppToastItem["kind"]): string {
   background: var(--info-bg);
 }
 
+.appToastItem--none {
+  color: var(--fg);
+}
+
 .appToastItem--success .appToastMsg,
 .appToastItem--warning .appToastMsg,
 .appToastItem--danger .appToastMsg,
-.appToastItem--info .appToastMsg {
+.appToastItem--info .appToastMsg,
+.appToastItem--primary .appToastMsg {
   color: inherit;
 }
 

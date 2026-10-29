@@ -161,8 +161,6 @@ function walkChmHtmlNode(
     return;
   }
   if (tag === "img") {
-    flushTextAcc(acc.text, out);
-    acc.text = "";
     const src = el.getAttribute("src")?.trim();
     if (src) {
       const resolved = resolveChmPath(topicPathPosix, src);
@@ -176,7 +174,8 @@ function walkChmHtmlNode(
             const copy = new Uint8Array(data.length);
             copy.set(data);
             ctx.imageWrites.push({ relativePath: rel, data: copy.buffer });
-            out.push(formatMdBlockImage(rel));
+            const alt = el.getAttribute("alt")?.trim() ?? "";
+            acc.text += formatMdBlockImage(rel, alt);
           } catch {
             /* skip */
           }

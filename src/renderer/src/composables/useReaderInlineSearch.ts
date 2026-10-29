@@ -1,7 +1,14 @@
 import type { ShallowRef } from "vue";
 import * as monaco from "monaco-editor";
+import { ensureSearchAnchorCursorInViewport } from "../reader/ensureSearchAnchorCursorInViewport";
 
 type MatchShape = { lineNumber: number; startColumn: number; endColumn: number };
+
+/**
+ * 与 Monaco FindModel.MATCHES_LIMIT 对齐。
+ * `findMatches` 默认仅 999 条：高亮词组全文匹配常超限，导致后文无装饰、且「下一处」回绕到文首。
+ */
+const INLINE_SEARCH_MATCHES_LIMIT = 19999;
 
 export function useReaderInlineSearch(deps: {
   editor: ShallowRef<monaco.editor.IStandaloneCodeEditor | null>;
@@ -29,6 +36,16 @@ export function useReaderInlineSearch(deps: {
     return leftOk && rightOk;
   }
 
+  function matchPassesWholeWord(it: monaco.editor.FindMatch): boolean {
+    if (!inlineSearchWholeWord) return true;
+    const m = deps.model.value;
+    if (!m) return false;
+    const lineText = m.getLineContent(it.range.startLineNumber);
+    const start = Math.max(0, it.range.startColumn - 1);
+    const end = Math.max(start, it.range.endColumn - 1);
+    return isWholeWordRange(lineText, start, end);
+  }
+
   function sameInlineSearchMatch(a: MatchShape, b: monaco.Range) {
     return (
       a.lineNumber === b.startLineNumber &&
@@ -47,16 +64,45 @@ export function useReaderInlineSearch(deps: {
       inlineSearchCaseSensitive,
       null,
       false,
+      INLINE_SEARCH_MATCHES_LIMIT,
     );
     if (inlineSearchWholeWord) {
-      matches = matches.filter((it) => {
-        const lineText = m.getLineContent(it.range.startLineNumber);
-        const start = Math.max(0, it.range.startColumn - 1);
-        const end = Math.max(start, it.range.endColumn - 1);
-        return isWholeWordRange(lineText, start, end);
-      });
+      matches = matches.filter(matchPassesWholeWord);
     }
     return matches;
+  }
+
+  /**
+   * 从 searchStart 起找下一处（含起点）；不受 findMatches 条数上限影响。
+   * 已有选区时从选区终点起搜，避免重复命中当前项。
+   */
+  function findNextInlineSearchMatchFrom(
+    query: string,
+    searchStart: monaco.IPosition,
+  ): monaco.editor.FindMatch | null {
+    const m = deps.model.value;
+    if (!m) return null;
+    let start: monaco.IPosition = {
+      lineNumber: searchStart.lineNumber,
+      column: searchStart.column,
+    };
+    for (let guard = 0; guard < INLINE_SEARCH_MATCHES_LIMIT; guard++) {
+      const hit = m.findNextMatch(
+        query,
+        start,
+        inlineSearchUseRegex,
+        inlineSearchCaseSensitive,
+        null,
+        false,
+      );
+      if (!hit) return null;
+      if (matchPassesWholeWord(hit)) return hit;
+      start = {
+        lineNumber: hit.range.endLineNumber,
+        column: hit.range.endColumn,
+      };
+    }
+    return null;
   }
 
   function applyInlineSearchDecorations() {
@@ -199,30 +245,35 @@ export function useReaderInlineSearch(deps: {
     },
   ): boolean {
     const e = deps.editor.value;
-    if (!e) return false;
+    const m = deps.model.value;
+    if (!e || !m) return false;
     const q = query.trim();
     if (!q) {
       clearInlineSearchState();
       return false;
     }
+    /** 视口外光标先挪到视口首行；「下一处」用 findNextMatch；装饰上限 19999（对齐查找栏） */
+    ensureSearchAnchorCursorInViewport(e);
+
     inlineSearchQuery = q;
     inlineSearchCaseSensitive = options?.caseSensitive === true;
     inlineSearchWholeWord = options?.wholeWord === true;
     inlineSearchUseRegex = options?.useRegex === true;
-    const matches = findInlineSearchMatches(q);
-    if (matches.length === 0) {
+
+    const sel = e.getSelection();
+    let searchStart: monaco.IPosition =
+      e.getPosition() ?? { lineNumber: 1, column: 1 };
+    if (sel && !sel.isEmpty()) {
+      const end = sel.getEndPosition();
+      searchStart = { lineNumber: end.lineNumber, column: end.column };
+    }
+
+    const hit = findNextInlineSearchMatchFrom(q, searchStart);
+    if (!hit) {
       clearInlineSearchState();
       return false;
     }
-    const pos = e.getPosition() ?? { lineNumber: 1, column: 1 };
-    let idx = matches.findIndex((it) => {
-      const r = it.range;
-      if (r.startLineNumber > pos.lineNumber) return true;
-      if (r.startLineNumber < pos.lineNumber) return false;
-      return r.startColumn > pos.column;
-    });
-    if (idx < 0) idx = 0;
-    const target = matches[idx]!.range;
+    const target = hit.range;
     inlineSearchCurrentMatch = {
       lineNumber: target.startLineNumber,
       startColumn: target.startColumn,

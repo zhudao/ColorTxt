@@ -1,4 +1,5 @@
 import {
+  chapterTitleForDisplay,
   filterChaptersByMinCharCount,
   rollupChapterCharCountsByHeadingLevel,
   rollupCharCountsByHeadingLevel,
@@ -153,13 +154,23 @@ export function buildChaptersFromMarkdownPhysicalLines(
   const displayLines =
     normalized.length > 0 ? normalized.split("\n") : [];
 
-  const chapters: Chapter[] = hits.map((h, i) => ({
-    title: h.title,
-    lineNumber: options.physicalLineToDisplayLine(h.physicalLine),
-    charCount: 0,
-    headingLevel: h.level,
-    tocOrder: i,
-  }));
+  // 只读：展示行已去 ATX `#`，且可能已套文本替换/转换 → 侧栏取展示行。
+  // 编辑态：展示行仍为磁盘原文（含 `#`）→ 须再走 detectMarkdownHeading，勿把 `#` 写进侧栏。
+  const chapters: Chapter[] = hits.map((h, i) => {
+    const lineNumber = options.physicalLineToDisplayLine(h.physicalLine);
+    const rawDisplay = displayLines[lineNumber - 1] ?? "";
+    const atxOnDisplay = detectMarkdownHeading(rawDisplay);
+    const title = atxOnDisplay
+      ? atxOnDisplay.title
+      : chapterTitleForDisplay(rawDisplay) || h.title;
+    return {
+      title,
+      lineNumber,
+      charCount: 0,
+      headingLevel: h.level,
+      tocOrder: i,
+    };
+  });
 
   if (chapters.length === 0) return [];
 

@@ -6,3 +6,19 @@ export function yieldToUi(): Promise<void> {
     setTimeout(resolve, 0);
   });
 }
+
+/**
+ * 等两帧 layout/paint。`document.hidden` 时 rAF 可能永不触发
+ *（摸鱼模式 hide 源窗后找书切章会卡死），改为立刻让出宏任务。
+ */
+export function afterNextPaints(): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof document !== "undefined" && document.hidden) {
+      setTimeout(resolve, 0);
+      return;
+    }
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => resolve());
+    });
+  });
+}

@@ -1,17 +1,32 @@
 <script setup lang="ts">
 import {
   computed,
+  nextTick,
   onBeforeUnmount,
   onMounted,
   ref,
   watch,
 } from "vue";
 import {
+  hexToHsl,
   hexToHsv,
+  hslToHex,
   hsvToHex,
   normalizeLooseHex6,
+  type Hsl,
   type Hsv,
 } from "../utils/color";
+import { pickScreenColor } from "../utils/pickScreenColor";
+import {
+  getHexColorPickerMode,
+  setHexColorPickerMode,
+  type HexColorPickerMode,
+} from "../utils/hexColorPickerMode";
+import RadioGroup from "./RadioGroup.vue";
+import IconButton from "./IconButton.vue";
+import { icons } from "../icons";
+
+type PickerMode = HexColorPickerMode;
 
 const props = withDefaults(
   defineProps<{
@@ -41,25 +56,62 @@ const svBoxRef = ref<HTMLElement | null>(null);
 const hueBarRef = ref<HTMLElement | null>(null);
 
 const popOpen = ref(false);
+const pickerMode = ref<PickerMode>("hsv");
 const draft = ref<Hsv>({ h: 210, s: 0.7, v: 0.9 });
+const draftHsl = ref<Hsl>({ h: 210, s: 0.7, l: 0.5 });
 const hexInput = ref("");
 const hexInputElRef = ref<HTMLInputElement | null>(null);
 const popStyle = ref<Record<string, string>>({});
 /** 避免首帧高度为 0 时用 fallback 判定「贴底」、实测变矮后又改回下方导致跳动 */
 const popVertPlacementLock = ref<"below" | "above" | null>(null);
+const eyedropperBusy = ref(false);
+let suppressOutsideCloseUntil = 0;
+
+function clamp01(n: number): number {
+  if (!Number.isFinite(n)) return 0;
+  return Math.min(1, Math.max(0, n));
+}
+
+function clampHue(n: number): number {
+  if (!Number.isFinite(n)) return 0;
+  return Math.min(360, Math.max(0, n));
+}
+
+function currentDraftHex(): string {
+  if (pickerMode.value === "hsl") {
+    return hslToHex(draftHsl.value.h, draftHsl.value.s, draftHsl.value.l);
+  }
+  return hsvToHex(draft.value.h, draft.value.s, draft.value.v);
+}
+
+function applyHexToDrafts(hex: string) {
+  const hsv = hexToHsv(hex);
+  if (hsv) {
+    if (hsv.s < 1e-4) hsv.h = draft.value.h;
+    draft.value = { ...hsv };
+  }
+  const hsl = hexToHsl(hex);
+  if (hsl) {
+    if (hsl.s < 1e-4) hsl.h = draftHsl.value.h;
+    draftHsl.value = { ...hsl };
+  }
+  hexInput.value = hex;
+}
 
 function syncDraftFromModel() {
-  const h = hexToHsv(props.modelValue);
-  if (h) draft.value = { ...h };
-  else draft.value = { h: 210, s: 0.7, v: 0.9 };
-  hexInput.value = props.modelValue;
+  const hex = normalizeLooseHex6(props.modelValue) ?? props.modelValue;
+  applyHexToDrafts(hex);
 }
 
 const POP_GAP = 6;
 const POP_FALLBACK_W = 280;
-const POP_FALLBACK_H = 260;
+/** 含色盘 + 滑条 + 模式切换，略估高以免误判「下方放得下」导致贴底裁切 */
+const POP_FALLBACK_H = 320;
 
-function placePopover(popEl?: HTMLElement | null) {
+function placePopover(
+  popEl?: HTMLElement | null,
+  opts?: { unlock?: boolean },
+) {
   const root = rootRef.value;
   const pop = popEl ?? popRef.value;
   if (!root) return;
@@ -67,19 +119,27 @@ function placePopover(popEl?: HTMLElement | null) {
   const pr = pop?.getBoundingClientRect();
   const popW =
     pr && pr.width >= 1 ? pr.width : POP_FALLBACK_W;
+  // scaleY(0) 入场时高度接近 0，不可信
+  const measuredH = pr && pr.height >= 40 ? pr.height : 0;
 
   const vw = window.innerWidth;
   const vh = window.innerHeight;
 
   let placement: "below" | "above";
-  if (popVertPlacementLock.value !== null) {
+  if (popVertPlacementLock.value !== null && !opts?.unlock) {
     placement = popVertPlacementLock.value;
   } else {
-    const hForFlip =
-      pr && pr.height >= 1 ? pr.height : POP_FALLBACK_H;
     const belowTop = r.bottom + POP_GAP;
-    placement =
-      belowTop + hForFlip > vh - 8 ? "above" : "below";
+    const spaceBelow = vh - 8 - belowTop;
+    const spaceAbove = r.top - POP_GAP - 8;
+    // 入场用估高；unlock 时才用实测。估高偏保守，避免下方「差一点」却先往下开再被裁
+    const hForFlip =
+      opts?.unlock && measuredH > 0
+        ? measuredH
+        : Math.max(measuredH, POP_FALLBACK_H);
+    if (hForFlip <= spaceBelow) placement = "below";
+    else if (hForFlip <= spaceAbove) placement = "above";
+    else placement = spaceAbove >= spaceBelow ? "above" : "below";
     popVertPlacementLock.value = placement;
   }
 
@@ -117,13 +177,16 @@ function onPopBeforeEnter(el: Element) {
 
 function onPopAfterEnter() {
   requestAnimationFrame(() => {
+    // 只微调位置，勿 unlock 改方向——否则 scaleY 展开末尾会突然从上翻到下
     placePopover();
-    hexInputElRef.value?.focus();
+    // 设置窗 body 可滚动：勿因 focus 滚走触发器，否则看起来像「闪一下就没了」
+    hexInputElRef.value?.focus({ preventScroll: true });
   });
 }
 
 function openPop() {
   if (props.disabled) return;
+  pickerMode.value = getHexColorPickerMode();
   syncDraftFromModel();
   popVertPlacementLock.value = null;
   popOpen.value = true;
@@ -147,10 +210,45 @@ function onCancel() {
 
 function onConfirm() {
   applyHexInputToDraft();
-  const hex = hsvToHex(draft.value.h, draft.value.s, draft.value.v);
-  emit("update:modelValue", hex);
+  emit("update:modelValue", currentDraftHex());
   closePop();
 }
+
+async function pickFromScreen() {
+  if (props.disabled || eyedropperBusy.value) return;
+  eyedropperBusy.value = true;
+  let hex: string | null = null;
+  try {
+    hex = await pickScreenColor();
+  } finally {
+    eyedropperBusy.value = false;
+    suppressOutsideCloseUntil = Date.now() + 400;
+  }
+  if (hex) {
+    applyHexToDrafts(hex);
+    emit("draftHex", hex);
+  }
+}
+
+function setPickerMode(mode: PickerMode) {
+  if (pickerMode.value === mode) return;
+  const hex = currentDraftHex();
+  pickerMode.value = mode;
+  setHexColorPickerMode(mode);
+  applyHexToDrafts(hex);
+  popVertPlacementLock.value = null;
+  void nextTick(() => placePopover());
+}
+
+const pickerModeModel = computed({
+  get: () => pickerMode.value,
+  set: (v: string) => setPickerMode(v as PickerMode),
+});
+
+const pickerModeOptions = [
+  { id: "hsv", label: "色盘" },
+  { id: "hsl", label: "HSL" },
+] as const;
 
 function hueForCss(h: number): number {
   return ((h % 360) + 360) % 360;
@@ -159,6 +257,9 @@ function hueForCss(h: number): number {
 /** 与 pickHue / 光标一致：自上而下 hue 0°→360°（线性） */
 const hueBg =
   "linear-gradient(to bottom, hsl(0,100%,50%), hsl(60,100%,50%), hsl(120,100%,50%), hsl(180,100%,50%), hsl(240,100%,50%), hsl(300,100%,50%), hsl(360,100%,50%))";
+
+const hslHueTrack =
+  "linear-gradient(to right, hsl(0,100%,50%), hsl(60,100%,50%), hsl(120,100%,50%), hsl(180,100%,50%), hsl(240,100%,50%), hsl(300,100%,50%), hsl(360,100%,50%))";
 
 const svLayersStyle = computed(() => ({
   backgroundColor: `hsl(${hueForCss(draft.value.h)}, 100%, 50%)`,
@@ -176,11 +277,113 @@ const hueCursorStyle = computed(() => ({
   transform: "translate(-50%, -50%)",
 }));
 
+const hslSatTrack = computed(() => {
+  const h = hueForCss(draftHsl.value.h);
+  const l = Math.round(draftHsl.value.l * 100);
+  return `linear-gradient(to right, hsl(${h}, 0%, ${l}%), hsl(${h}, 100%, ${l}%))`;
+});
+
+const hslLightTrack = computed(() => {
+  const h = hueForCss(draftHsl.value.h);
+  const s = Math.round(draftHsl.value.s * 100);
+  return `linear-gradient(to right, hsl(${h}, ${s}%, 0%), hsl(${h}, ${s}%, 50%), hsl(${h}, ${s}%, 100%))`;
+});
+
+const hslHModel = computed({
+  get: () => Math.round(draftHsl.value.h),
+  set: (n: number) => {
+    if (!Number.isFinite(n)) return;
+    patchHsl({ h: clampHue(n) });
+  },
+});
+
+const hslSModel = computed({
+  get: () => Math.round(draftHsl.value.s * 100),
+  set: (n: number) => {
+    if (!Number.isFinite(n)) return;
+    patchHsl({ s: clamp01(n / 100) });
+  },
+});
+
+const hslLModel = computed({
+  get: () => Math.round(draftHsl.value.l * 100),
+  set: (n: number) => {
+    if (!Number.isFinite(n)) return;
+    patchHsl({ l: clamp01(n / 100) });
+  },
+});
+
+function applyHslNum(channel: "h" | "s" | "l", n: number) {
+  const max = channel === "h" ? 360 : 100;
+  const clamped = Math.min(max, Math.max(0, Math.round(n)));
+  if (channel === "h") patchHsl({ h: clamped });
+  else if (channel === "s") patchHsl({ s: clamp01(clamped / 100) });
+  else patchHsl({ l: clamp01(clamped / 100) });
+}
+
+function syncHslNumEl(channel: "h" | "s" | "l", el: HTMLInputElement) {
+  const shown =
+    channel === "h"
+      ? Math.round(draftHsl.value.h)
+      : channel === "s"
+        ? Math.round(draftHsl.value.s * 100)
+        : Math.round(draftHsl.value.l * 100);
+  el.value = String(shown);
+}
+
+function onHslNumInput(channel: "h" | "s" | "l", ev: Event) {
+  const el = ev.target as HTMLInputElement;
+  const raw = el.value.trim();
+  if (raw === "" || raw === "-") return;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) {
+    syncHslNumEl(channel, el);
+    return;
+  }
+  const max = channel === "h" ? 360 : 100;
+  applyHslNum(channel, n);
+  if (n < 0 || n > max) syncHslNumEl(channel, el);
+}
+
+function onHslNumBlur(channel: "h" | "s" | "l", ev: Event) {
+  const el = ev.target as HTMLInputElement;
+  const raw = el.value.trim();
+  const n = Number(raw);
+  if (!Number.isFinite(n)) {
+    syncHslNumEl(channel, el);
+    return;
+  }
+  applyHslNum(channel, n);
+  syncHslNumEl(channel, el);
+}
+
+function patchHsl(partial: Partial<Hsl>) {
+  const next: Hsl = { ...draftHsl.value, ...partial };
+  draftHsl.value = next;
+  const hex = hslToHex(next.h, next.s, next.l);
+  hexInput.value = hex;
+  const hsv = hexToHsv(hex);
+  if (hsv) {
+    if (hsv.s < 1e-4) hsv.h = next.h;
+    draft.value = hsv;
+  }
+}
+
 /** 弹层打开时用草稿色实时预览；关闭后用已确认的 modelValue */
 const swatchDisplayColor = computed(() => {
   if (!popOpen.value) return props.modelValue;
-  return hsvToHex(draft.value.h, draft.value.s, draft.value.v);
+  return currentDraftHex();
 });
+
+function afterHsvPick() {
+  const hex = hsvToHex(draft.value.h, draft.value.s, draft.value.v);
+  hexInput.value = hex;
+  const hsl = hexToHsl(hex);
+  if (hsl) {
+    if (hsl.s < 1e-4) hsl.h = draft.value.h;
+    draftHsl.value = hsl;
+  }
+}
 
 function pickSvFromEvent(ev: PointerEvent, box: HTMLElement) {
   const r = box.getBoundingClientRect();
@@ -191,7 +394,7 @@ function pickSvFromEvent(ev: PointerEvent, box: HTMLElement) {
     s: r.width <= 0 ? 0 : x / r.width,
     v: r.height <= 0 ? 0 : 1 - y / r.height,
   };
-  hexInput.value = hsvToHex(draft.value.h, draft.value.s, draft.value.v);
+  afterHsvPick();
 }
 
 function pickHueFromEvent(ev: PointerEvent, bar: HTMLElement) {
@@ -204,7 +407,7 @@ function pickHueFromEvent(ev: PointerEvent, bar: HTMLElement) {
     ...draft.value,
     h,
   };
-  hexInput.value = hsvToHex(draft.value.h, draft.value.s, draft.value.v);
+  afterHsvPick();
 }
 
 let svDragging = false;
@@ -274,14 +477,12 @@ function applyHexInputToDraft() {
   const raw = hexInput.value.trim();
   const canonical = normalizeLooseHex6(raw);
   if (!canonical) return;
-  const h = hexToHsv(canonical);
-  if (!h) return;
-  draft.value = { ...h };
-  hexInput.value = canonical;
+  applyHexToDrafts(canonical);
 }
 
 function onDocPointerDown(ev: PointerEvent) {
   if (!popOpen.value) return;
+  if (Date.now() < suppressOutsideCloseUntil) return;
   const t = ev.target as Node | null;
   if (!t) return;
   if (rootRef.value?.contains(t) || popRef.value?.contains(t)) return;
@@ -303,10 +504,17 @@ watch(
 );
 
 watch(
-  () => draft.value,
+  () => props.disabled,
+  (disabled) => {
+    if (disabled && popOpen.value) onCancel();
+  },
+);
+
+watch(
+  [draft, draftHsl, pickerMode],
   () => {
     if (!popOpen.value) return;
-    emit("draftHex", hsvToHex(draft.value.h, draft.value.s, draft.value.v));
+    emit("draftHex", currentDraftHex());
   },
   { deep: true },
 );
@@ -354,7 +562,15 @@ onBeforeUnmount(() => {
           aria-label="选择颜色"
           @click.stop
         >
-          <div class="hexColorPickerMain">
+          <div class="hexColorPickerModes">
+            <RadioGroup
+              v-model="pickerModeModel"
+              size="sm"
+              aria-label="取色方式"
+              :options="pickerModeOptions"
+            />
+          </div>
+          <div v-if="pickerMode === 'hsv'" class="hexColorPickerMain">
             <div
               ref="svBoxRef"
               class="hexColorPickerSv"
@@ -380,6 +596,83 @@ onBeforeUnmount(() => {
               <div class="hexColorPickerHueCursor" :style="hueCursorStyle" />
             </div>
           </div>
+          <div v-else class="hexColorPickerHsl">
+            <label class="hexColorPickerHslRow">
+              <span class="hexColorPickerHslLabel">H</span>
+              <input
+                v-model.number="hslHModel"
+                class="hexColorPickerHslRange"
+                type="range"
+                min="0"
+                max="360"
+                step="1"
+                aria-label="色相"
+                :style="{ '--hsl-track': hslHueTrack }"
+              />
+              <input
+                :value="hslHModel"
+                class="hexColorPickerHslNum"
+                type="number"
+                min="0"
+                max="360"
+                step="1"
+                aria-label="色相数值"
+                @input="onHslNumInput('h', $event)"
+                @change="onHslNumBlur('h', $event)"
+                @blur="onHslNumBlur('h', $event)"
+              />
+            </label>
+            <label class="hexColorPickerHslRow">
+              <span class="hexColorPickerHslLabel">S</span>
+              <input
+                v-model.number="hslSModel"
+                class="hexColorPickerHslRange"
+                type="range"
+                min="0"
+                max="100"
+                step="1"
+                aria-label="饱和度"
+                :style="{ '--hsl-track': hslSatTrack }"
+              />
+              <input
+                :value="hslSModel"
+                class="hexColorPickerHslNum"
+                type="number"
+                min="0"
+                max="100"
+                step="1"
+                aria-label="饱和度数值"
+                @input="onHslNumInput('s', $event)"
+                @change="onHslNumBlur('s', $event)"
+                @blur="onHslNumBlur('s', $event)"
+              />
+            </label>
+            <label class="hexColorPickerHslRow">
+              <span class="hexColorPickerHslLabel">L</span>
+              <input
+                v-model.number="hslLModel"
+                class="hexColorPickerHslRange"
+                type="range"
+                min="0"
+                max="100"
+                step="1"
+                aria-label="亮度"
+                :style="{ '--hsl-track': hslLightTrack }"
+              />
+              <input
+                :value="hslLModel"
+                class="hexColorPickerHslNum"
+                type="number"
+                min="0"
+                max="100"
+                step="1"
+                aria-label="亮度数值"
+                @input="onHslNumInput('l', $event)"
+                @change="onHslNumBlur('l', $event)"
+                @blur="onHslNumBlur('l', $event)"
+              />
+            </label>
+          </div>
           <div class="hexColorPickerFooter">
             <input
               ref="hexInputElRef"
@@ -391,6 +684,14 @@ onBeforeUnmount(() => {
               aria-label="十六进制色值"
               @change="applyHexInputToDraft"
               @keyup.enter="applyHexInputToDraft"
+            />
+            <IconButton
+              class="hexColorPickerDropper"
+              :icon-html="icons.eyedropper"
+              title="从屏幕取色"
+              aria-label="从屏幕取色"
+              :disabled="eyedropperBusy"
+              @click.stop="pickFromScreen"
             />
             <div class="hexColorPickerActions">
               <button type="button" class="hexColorPickerBtnText" @click="onCancel">
@@ -461,6 +762,103 @@ onBeforeUnmount(() => {
   border: 1px solid var(--border, #e4e7ed);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
   overflow: visible;
+}
+
+.hexColorPickerModes {
+  margin-bottom: 10px;
+}
+
+.hexColorPickerModes :deep(.radioGroup) {
+  display: flex;
+  width: 100%;
+}
+
+.hexColorPickerModes :deep(.radioGroupOption) {
+  flex: 1;
+  text-align: center;
+}
+
+.hexColorPickerHsl {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.hexColorPickerHslRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hexColorPickerHslLabel {
+  flex-shrink: 0;
+  width: 12px;
+  font-size: 12px;
+  font-family: ui-monospace, monospace;
+  color: var(--muted, #909399);
+}
+
+.hexColorPickerHslRange {
+  flex: 1;
+  min-width: 0;
+  height: 16px;
+  margin: 0;
+  appearance: none;
+  background: transparent;
+  outline: none;
+  cursor: pointer;
+}
+
+.hexColorPickerHslRange::-webkit-slider-runnable-track {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--hsl-track);
+}
+
+.hexColorPickerHslRange::-moz-range-track {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--hsl-track);
+  border: none;
+}
+
+.hexColorPickerHslNum::-webkit-inner-spin-button,
+.hexColorPickerHslNum::-webkit-outer-spin-button {
+  appearance: none;
+}
+
+.hexColorPickerHslRange::-webkit-slider-thumb {
+  appearance: none;
+  margin-top: -2px;
+  width: 12px;
+  height: 12px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  background: #fff;
+  border: 0.5px solid rgba(0, 0, 0, 0.2);
+  box-shadow: var(--picker-handle-shadow);
+}
+
+.hexColorPickerHslRange::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  background: #fff;
+  border: 0.5px solid rgba(0, 0, 0, 0.2);
+  box-shadow: var(--picker-handle-shadow);
+}
+
+.hexColorPickerHslNum {
+  flex-shrink: 0;
+  width: 44px;
+  height: 26px;
+  padding: 0 4px;
+  box-sizing: border-box;
+  font-size: 12px;
+  font-family: ui-monospace, monospace;
+  text-align: right;
 }
 
 .hexPickerPop-enter-active,
@@ -561,6 +959,12 @@ onBeforeUnmount(() => {
   padding: 0 8px;
   font-size: 13px;
   font-family: ui-monospace, monospace;
+}
+
+.hexColorPickerDropper {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
 }
 
 .hexColorPickerActions {

@@ -1,0 +1,71 @@
+.findBookResultsList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* 搜索 / 发现：VirtualList 行间距（含在 rowStride 内，见 findBookListLayout.ts）
+ * 本文件为全局 CSS，勿写 :deep()（仅 SFC scoped 有效） */
+.findBookResultsVirtual .virtualList-row {
+  padding-bottom: 10px;
+  box-sizing: border-box;
+}
+.findBookResultsVirtual .findBookListItem {
+  height: 100%;
+  overflow: hidden;
+}
+
+/* 搜索 / 发现：列表 + 底部「加载中」（剩余空白垂直居中） */
+.findBookResults {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  box-sizing: border-box;
+}
+.findBookResultsLoading {
+  flex: 1 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-height: 48px;
+  padding: 12px;
+  font-size: 14px;
+  color: var(--text-muted, #888);
+  margin: 0;
+}
+
+/* 找书 / 发现：居中空状态 */
+.findBookEmpty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-size: 14px;
+  color: var(--text-muted, #888);
+  gap: 8px;
+}
+.findBookEmptyIcon {
+  font-size: 28px;
+  margin: 0;
+}
+.findBookEmptyIcon + .findBookEmptyText {
+  font-size: 16px;
+  margin: 10px;
+}
+.findBookEmptyText--loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0;
+}
+
+/** 封面解析中的占位（非最终默认封面） */
+.findBookListItemCover--pending {
+  background: var(--scrollbar-track);
+  box-sizing: border-box;
+}

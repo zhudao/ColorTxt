@@ -15,7 +15,6 @@ import {
 } from "@shared/characterCardTextureEffects";
 import { useCharacterCardTilt } from "../composables/useCharacterCardTilt";
 import { useCharacterCardPopoverZoom } from "../composables/useCharacterCardPopoverZoom";
-import zoomInSvg from "../assets/zoom_in.svg?raw";
 import { icons } from "../icons";
 import IconButton from "./IconButton.vue";
 
@@ -35,6 +34,10 @@ const props = withDefaults(
     reorderDragging?: boolean;
     /** 点击翻面时同步检测，避免排序松手后 Vue 尚未 patch 就触发翻转 */
     suppressFlipCheck?: () => boolean;
+    /** 多音色 + AI 识别 + 已设台词：显示「语音」按钮 */
+    showSpeakButton?: boolean;
+    /** 语音按钮图标（播放中可动画帧） */
+    speakIconHtml?: string;
   }>(),
   {
     nameZoom: 1,
@@ -42,6 +45,8 @@ const props = withDefaults(
     popoverOpen: false,
     tiltEnabled: true,
     reorderDragging: false,
+    showSpeakButton: false,
+    speakIconHtml: "",
   },
 );
 
@@ -50,6 +55,7 @@ const popoverOpenRef = toRef(props, "popoverOpen");
 const emit = defineEmits<{
   toggleFlip: [];
   edit: [];
+  speak: [];
   viewPortrait: [];
 }>();
 
@@ -274,7 +280,15 @@ onBeforeUnmount(() => {
               @click="emit('edit')"
             />
             <IconButton
-              :icon-html="zoomInSvg"
+              v-if="showSpeakButton"
+              :icon-html="speakIconHtml"
+              title="语音"
+              :aria-label="`播放 ${entry.displayName} 台词`"
+              class="cardCornerAction"
+              @click="emit('speak')"
+            />
+            <IconButton
+              :icon-html="icons.zoomIn"
               title="放大"
               aria-label="放大角色卡"
               :disabled="!portraitUrl"
@@ -304,6 +318,10 @@ onBeforeUnmount(() => {
             {{ entry.displayName || "佚名" }}
           </div>
           <div ref="backScrollEl" class="backScroll">
+            <div v-if="entry.aliases?.trim()" class="backLine">
+              <div class="k">别名</div>
+              <div class="v">{{ entry.aliases.trim() }}</div>
+            </div>
             <div v-if="entry.ageText" class="backLine">
               <div class="k">年龄</div>
               <div class="v">{{ entry.ageText }}</div>
@@ -322,6 +340,7 @@ onBeforeUnmount(() => {
             </div>
             <div
               v-if="
+                !entry.aliases?.trim() &&
                 !entry.ageText &&
                 !entry.identity &&
                 !entry.bio &&
@@ -633,7 +652,9 @@ onBeforeUnmount(() => {
 
 .charCardBackEmpty {
   margin: 0;
+  padding: 8px 10px;
   font-size: 12px;
+  line-height: 1.45;
   color: var(--muted);
 }
 </style>

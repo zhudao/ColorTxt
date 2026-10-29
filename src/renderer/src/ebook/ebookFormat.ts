@@ -16,6 +16,12 @@ export function isSupportedBookPath(filePath: string): boolean {
   return isEbookFilePath(filePath);
 }
 
+/** 纯文本书：仅 `.txt` / `.md`（不含电子书） */
+export function isPlainTextBookPath(filePath: string): boolean {
+  const lower = filePath.replace(/\\/g, "/").trim().toLowerCase();
+  return lower.endsWith(".txt") || lower.endsWith(".md");
+}
+
 export function isMarkdownFilePath(filePath: string): boolean {
   return filePath.replace(/\\/g, "/").trim().toLowerCase().endsWith(".md");
 }

@@ -9,6 +9,10 @@ import {
   type FileBookmarkItem,
   type FileMetaRecord,
 } from "../stores/fileMetaStore";
+import type {
+  TextConvertWidthMode,
+  TextConvertZhMode,
+} from "@shared/textConvertTypes";
 
 type ReaderRef = Ref<InstanceType<typeof ReaderMain> | null>;
 type TxtStreamPipeline = ReturnType<
@@ -32,6 +36,11 @@ export function useAppBookmarkPins(deps: {
   removeBookmark: (path: string, line: number) => void;
   clearBookmarks: (path: string) => void;
   chapters: Ref<readonly Chapter[]>;
+  textConvertZh: Ref<TextConvertZhMode>;
+  textConvertLetter: Ref<TextConvertWidthMode>;
+  textConvertDigit: Ref<TextConvertWidthMode>;
+  compressBlankLines: Ref<boolean>;
+  leadIndentFullWidth: Ref<boolean>;
 }) {
   const pinnedScrollTop = ref<number | null>(null);
   const pinActive = computed(() => pinnedScrollTop.value !== null);
@@ -115,11 +124,20 @@ export function useAppBookmarkPins(deps: {
     () => activeBookmarkInViewport.value !== null,
   );
 
+  function bookmarkPreviewLineContent(physicalLine: number): string {
+    const line = Math.max(1, Math.floor(physicalLine));
+    if (deps.readerEditMode.value) {
+      return deps.stream.getPhysicalLineContent(line).trim();
+    }
+    const displayLine = deps.stream.physicalLineToDisplayForReader(line);
+    return deps.stream.getDisplayLineContent(displayLine).trim();
+  }
+
   function resolveBookmarkPreviewContent(line: number) {
     const start = Math.max(1, Math.floor(line));
     const end = Math.max(start, deps.stream.getPhysicalLineCount());
     for (let i = start; i <= end; i += 1) {
-      const text = deps.stream.getPhysicalLineContent(i).trim();
+      const text = bookmarkPreviewLineContent(i);
       if (text) return text;
     }
     return "";
@@ -137,18 +155,22 @@ export function useAppBookmarkPins(deps: {
     return t ? t : undefined;
   }
 
-  const bookmarkListItems = computed(() =>
-    currentFileBookmarks.value.map((it) => {
-      const _tick = deps.totalLineCount.value;
-      void _tick;
-      return {
-        line: it.line,
-        note: it.note,
-        content: resolveBookmarkPreviewContent(it.line),
-        chapterTitle: resolveBookmarkChapterTitle(it.line),
-      };
-    }),
-  );
+  const bookmarkListItems = computed(() => {
+    // 展示层（format / 转换）变化时须重算原文摘要
+    void deps.totalLineCount.value;
+    void deps.readerEditMode.value;
+    void deps.textConvertZh.value;
+    void deps.textConvertLetter.value;
+    void deps.textConvertDigit.value;
+    void deps.compressBlankLines.value;
+    void deps.leadIndentFullWidth.value;
+    return currentFileBookmarks.value.map((it) => ({
+      line: it.line,
+      note: it.note,
+      content: resolveBookmarkPreviewContent(it.line),
+      chapterTitle: resolveBookmarkChapterTitle(it.line),
+    }));
+  });
   watch(activeBookmarkLine, (line, prev) => {
     if (line == null || line === prev) return;
     if (deps.sidebarTab.value === "bookmarks") deps.pulseBookmarkListCenter();
@@ -225,6 +247,11 @@ export function useAppBookmarkPins(deps: {
     void deps.lastProbeLine.value;
     void deps.chapters.value;
     void deps.readerEditMode.value;
+    void deps.textConvertZh.value;
+    void deps.textConvertLetter.value;
+    void deps.textConvertDigit.value;
+    void deps.compressBlankLines.value;
+    void deps.leadIndentFullWidth.value;
     void stagedEditingBookmarkLine.value;
     const line = getPendingBookmarkSaveLine();
     return {
@@ -290,6 +317,7 @@ export function useAppBookmarkPins(deps: {
   }
 
   function jumpToBookmark(line: number) {
+    ensurePinBeforeRevealFindWidget();
     const displayLine = deps.readerEditMode.value
       ? Math.max(1, Math.floor(line))
       : deps.stream.physicalLineToDisplayForReader(line);

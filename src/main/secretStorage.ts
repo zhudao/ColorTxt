@@ -5,7 +5,7 @@ import {
   randomBytes,
   scryptSync,
 } from "node:crypto";
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { SecretSlotId } from "@shared/secretSlots";
 
@@ -14,7 +14,7 @@ type SecretsBackend = "safeStorage" | "appBound";
 type SecretsFileV1 = {
   version: 1;
   backend: SecretsBackend;
-  values: Partial<Record<SecretSlotId, string>>;
+  values: Partial<Record<string, string>>;
 };
 
 const SECRETS_FILE = "secrets.v1.json";
@@ -23,6 +23,16 @@ const APP_BOUND_IV_LEN = 12;
 const APP_BOUND_TAG_LEN = 16;
 
 let memoryCache: SecretsFileV1 | null = null;
+let secretsWriteQueue: Promise<void> = Promise.resolve();
+
+function runSerializedSecretsWrite<T>(fn: () => Promise<T>): Promise<T> {
+  const task = secretsWriteQueue.then(fn, fn);
+  secretsWriteQueue = task.then(
+    () => undefined,
+    () => undefined,
+  );
+  return task;
+}
 
 export function isSystemSecretEncryptionAvailable(): boolean {
   try {
@@ -107,13 +117,26 @@ async function persistSecretsFile(file: SecretsFileV1): Promise<void> {
   const dir = path.dirname(secretsFilePath());
   await mkdir(dir, { recursive: true });
   const p = secretsFilePath();
-  await writeFile(p, `${JSON.stringify(file, null, 2)}\n`, "utf-8");
+  const tmp = `${p}.tmp`;
+  const json = `${JSON.stringify(file, null, 2)}\n`;
+  await writeFile(tmp, json, "utf-8");
   try {
-    await chmod(p, 0o600);
+    await chmod(tmp, 0o600);
   } catch {
     /* Windows 等可能不支持 */
   }
-  memoryCache = file;
+  try {
+    await rename(tmp, p);
+  } catch {
+    await writeFile(p, json, "utf-8");
+    try {
+      await chmod(p, 0o600);
+    } catch {
+      /* ignore */
+    }
+    await unlink(tmp).catch(() => undefined);
+  }
+  memoryCache = structuredClone(file);
 }
 
 async function loadSecretsFile(): Promise<SecretsFileV1> {
@@ -155,17 +178,19 @@ export async function setSecret(
   slot: SecretSlotId,
   plain: string,
 ): Promise<void> {
-  const file = await loadSecretsFile();
-  const trimmed = plain.trim();
-  if (!trimmed) {
-    delete file.values[slot];
-  } else {
-    file.backend = isSystemSecretEncryptionAvailable()
-      ? "safeStorage"
-      : "appBound";
-    file.values[slot] = encryptSecret(trimmed, file.backend);
-  }
-  await persistSecretsFile(file);
+  await runSerializedSecretsWrite(async () => {
+    const file = structuredClone(await loadSecretsFile());
+    const trimmed = plain.trim();
+    if (!trimmed) {
+      delete file.values[slot];
+    } else {
+      file.backend = isSystemSecretEncryptionAvailable()
+        ? "safeStorage"
+        : "appBound";
+      file.values[slot] = encryptSecret(trimmed, file.backend);
+    }
+    await persistSecretsFile(file);
+  });
 }
 
 export async function clearSecret(slot: SecretSlotId): Promise<void> {
@@ -174,17 +199,49 @@ export async function clearSecret(slot: SecretSlotId): Promise<void> {
 
 export async function setSecretsBatch(
   entries: Partial<Record<SecretSlotId, string>>,
+  opts?: { skipEmpty?: boolean },
 ): Promise<void> {
+  await runSerializedSecretsWrite(async () => {
+    const file = structuredClone(await loadSecretsFile());
+    file.backend = isSystemSecretEncryptionAvailable()
+      ? "safeStorage"
+      : "appBound";
+    for (const [slot, value] of Object.entries(entries) as Array<
+      [SecretSlotId, string | undefined]
+    >) {
+      const trimmed = (value ?? "").trim();
+      if (!trimmed) {
+        if (!opts?.skipEmpty) delete file.values[slot];
+      } else {
+        file.values[slot] = encryptSecret(trimmed, file.backend);
+      }
+    }
+    await persistSecretsFile(file);
+  });
+}
+
+/** 读取已废弃 slot（仅迁移用） */
+export async function getDeprecatedSecret(slot: string): Promise<string> {
   const file = await loadSecretsFile();
-  file.backend = isSystemSecretEncryptionAvailable()
-    ? "safeStorage"
-    : "appBound";
-  for (const [slot, value] of Object.entries(entries) as Array<
-    [SecretSlotId, string | undefined]
-  >) {
-    const trimmed = (value ?? "").trim();
-    if (!trimmed) delete file.values[slot];
-    else file.values[slot] = encryptSecret(trimmed, file.backend);
-  }
-  await persistSecretsFile(file);
+  const enc = file.values[slot];
+  if (!enc) return "";
+  return decryptSecret(enc, file.backend);
+}
+
+/** 从磁盘删除已废弃 slot */
+export async function purgeDeprecatedSecretSlots(
+  slots: readonly string[],
+): Promise<void> {
+  if (slots.length === 0) return;
+  await runSerializedSecretsWrite(async () => {
+    const file = structuredClone(await loadSecretsFile());
+    let changed = false;
+    for (const slot of slots) {
+      if (file.values[slot]) {
+        delete file.values[slot];
+        changed = true;
+      }
+    }
+    if (changed) await persistSecretsFile(file);
+  });
 }

@@ -44,11 +44,11 @@ function onSelect(id: string) {
 </script>
 
 <template>
-  <div class="aiProfileToolbar">
-    <span class="aiProfileToolbarLabel">当前方案</span>
+  <div class="settingsRowMain settingsRowMain--baseline aiProfileToolbar">
+    <h3 class="settingsLabel short aiProfileToolbarTitle">配置方案</h3>
     <div class="aiProfileToolbarMain">
       <AppCustomSelect
-        class="aiProfileSelect"
+        class="aiProfileSelect settingsRowControl"
         :model-value="editingId"
         :display-label="displayName"
         :placeholder="placeholder"
@@ -56,7 +56,7 @@ function onSelect(id: string) {
         :scroll-items="scrollItems"
         :fixed-bottom-items="selectListsEmpty"
         :scroll-max-height="280"
-        ariaLabel="当前方案"
+        ariaLabel="配置方案"
         @update:model-value="onSelect"
       />
       <div class="aiProfileToolbarActions">
@@ -95,31 +95,21 @@ function onSelect(id: string) {
 </template>
 
 <style scoped>
-.aiProfileToolbar {
-  display: flex;
-  align-items: baseline;
-  gap: 16px;
-  min-width: 0;
-}
-
-.aiProfileToolbarLabel {
-  font-size: 14px;
-  color: var(--fg);
-  white-space: nowrap;
-  flex: 1 1 30%;
-  min-width: 30%;
+.aiProfileToolbarTitle {
+  margin: 0;
+  font-weight: 600;
 }
 
 .aiProfileToolbarMain {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex: 1 1 65%;
+  flex: 1 1 0;
   min-width: 0;
 }
 
 .aiProfileSelect {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-width: 0;
 }
 

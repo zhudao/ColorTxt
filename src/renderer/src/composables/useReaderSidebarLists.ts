@@ -2,6 +2,7 @@ import { computed, nextTick, ref, shallowRef, watch } from "vue";
 import type { Chapter } from "../chapter";
 import { defaultChapterMinCharCount } from "../constants/appUi";
 import type VirtualList from "../components/VirtualList.vue";
+import type { BookmarkListPanelExpose } from "../components/BookmarkListPanel.vue";
 import type { FileSortMode } from "../constants/fileCategories";
 import {
   FILE_CATEGORY_FILTER_ALL,
@@ -26,7 +27,7 @@ export type SidebarFileItem = {
   /**
    * 阅读进度（%）；`undefined` 表示尚未在 meta 中有记录（从未打开过），
    * 与 `0`（已打开且进度为 0%）不同；排序时会将无记录项固定排在最后。
-   * 列表行展示用 `metaProgressMap` + 实时进度；`fileRowsEnriched` 故意不写本字段，避免滚动时整表重算。
+   * 列表行展示用 `metaProgressMap` + 实时进度；「阅读进度」排序用切入时快照，避免滚动重排。
    */
   progress?: number;
   /**
@@ -43,6 +44,14 @@ type SidebarBookmarkItem = {
   line: number;
   note?: string;
   content: string;
+};
+
+export type ReaderSidebarListOptions = {
+  /**
+   * 章节列表折叠后，虚拟列表下标与 `chaptersVisible` 不一致。
+   * 返回展示行下标；面板未挂载时返回 `undefined` 则回退到全表下标。
+   */
+  resolveDisplayedChapterIndex?: () => number | undefined;
 };
 
 export type ReaderSidebarListProps = Readonly<{
@@ -69,7 +78,9 @@ export type ReaderSidebarListProps = Readonly<{
   fileCategory?: string;
   /** 文件列表排序 */
   fileSort?: FileSortMode;
-  /** 当前打开文件的实时进度（%）；仅「按阅读进度」排序时参与 `filesSorted`（勿用于打开时间排序，以免滚动时整表重算） */
+  /** 文件列表：列表 / 树状（树模式下当前文件居中由 FileListPanel 处理） */
+  fileListViewMode?: import("../constants/fileCategories").FileListViewMode;
+  /** 当前打开文件的实时进度（%）；切入「阅读进度」排序时写入快照，之后不参与重排 */
   liveReadingProgressPercent?: number;
   /** 与设置「章节最少字数」一致；0 表示保留无正文字数的目录项（如书名页） */
   chapterMinCharCount?: number;
@@ -207,16 +218,18 @@ function sortFileList(
 export function useReaderSidebarLists(
   props: ReaderSidebarListProps,
   emit: (e: "jumpToChapter", chapter: Chapter) => void,
+  opts?: ReaderSidebarListOptions,
 ) {
   const chapterListRef = ref<InstanceType<typeof VirtualList> | null>(null);
   const fileListRef = ref<InstanceType<typeof VirtualList> | null>(null);
-  const bookmarkListRef = ref<InstanceType<typeof VirtualList> | null>(null);
+  const bookmarkListRef = ref<BookmarkListPanelExpose | null>(null);
 
   const fileFilterQuery = ref("");
 
   /**
    * 当前排序为「打开时间」（升或降）时从 meta 拍快照；排序只用快照，
-   * 打开文件时更新 `lastOpenedAt` 不会改列表顺序；每次选「打开时间」会重拍（含升/降互切）。
+   * 阅读过程中原地更新 `lastOpenedAt` 不会改列表顺序。
+   * 切入「打开时间」（含升/降互切）或打开列表中已有文件时会重拍一次。
    */
   const openedAtSortSnapshot = shallowRef(new Map<string, number>());
 
@@ -233,14 +246,78 @@ export function useReaderSidebarLists(
     openedAtSortSnapshot.value = m;
   }
 
+  function filePathInSidebarList(path: string): boolean {
+    const key = fileHistoryKey(path);
+    return props.files.some((f) => fileHistoryKey(f.path) === key);
+  }
+
+  /** 打开列表中的文件：重拍 meta，并把当前文件标为最新，避免 touch 尚未写入时顺序不变。 */
+  function refreshOpenedAtSortSnapshotForOpenedFile(path: string) {
+    refreshOpenedAtSortSnapshotFromMeta();
+    const m = new Map(openedAtSortSnapshot.value);
+    m.set(fileHistoryKey(path), Date.now());
+    openedAtSortSnapshot.value = m;
+  }
+
+  /**
+   * 「阅读进度」排序快照：与打开时间同理，滚动时实时进度只更新行展示，不重排；
+   * 仅在用户切入 progressAsc/Desc（含升降互切）时重拍。
+   */
+  const progressSortSnapshot = shallowRef(new Map<string, number>());
+
+  function refreshProgressSortSnapshot() {
+    const m = new Map<string, number>();
+    const map = props.metaProgressByPathKey ?? EMPTY_META_PROGRESS;
+    for (const [k, v] of map) {
+      if (typeof v === "number" && Number.isFinite(v)) m.set(k, v);
+    }
+    const cur = props.currentFilePath?.trim();
+    const live = props.liveReadingProgressPercent;
+    if (cur && typeof live === "number" && Number.isFinite(live)) {
+      m.set(fileHistoryKey(cur), live);
+    }
+    progressSortSnapshot.value = m;
+  }
+
   watch(
     () => props.fileSort ?? "nameAsc",
     (mode) => {
       if (mode === "lastReadAtAsc" || mode === "lastReadAtDesc") {
         refreshOpenedAtSortSnapshotFromMeta();
       }
+      if (mode === "progressAsc" || mode === "progressDesc") {
+        refreshProgressSortSnapshot();
+      }
     },
     { immediate: true },
+  );
+
+  /**
+   * 启动时排序偏好可能先于 file.meta 就绪；空快照补拍一次，避免「打开时间」按文件名排。
+   * 仅在快照仍为空时补拍，避免打开文件（原地改 lastOpenedAt）把当前项顶到最前。
+   */
+  watch(
+    () => props.fileMetaRecords,
+    (records) => {
+      const mode = props.fileSort ?? "nameAsc";
+      if (mode !== "lastReadAtAsc" && mode !== "lastReadAtDesc") return;
+      if (openedAtSortSnapshot.value.size > 0) return;
+      const hasOpenedAt = (records ?? []).some(
+        (r) =>
+          typeof r.lastOpenedAt === "number" && Number.isFinite(r.lastOpenedAt),
+      );
+      if (hasOpenedAt) refreshOpenedAtSortSnapshotFromMeta();
+    },
+  );
+
+  watch(
+    () => props.metaProgressByPathKey,
+    (map) => {
+      const mode = props.fileSort ?? "nameAsc";
+      if (mode !== "progressAsc" && mode !== "progressDesc") return;
+      if (progressSortSnapshot.value.size > 0) return;
+      if ((map?.size ?? 0) > 0) refreshProgressSortSnapshot();
+    },
   );
 
   /**
@@ -293,9 +370,7 @@ export function useReaderSidebarLists(
   const filesSorted = computed(() => {
     const mode = props.fileSort ?? "nameAsc";
     const base = filesByCategory.value;
-    const needsArchivedProgressOnly =
-      mode === "lastReadAtAsc" || mode === "lastReadAtDesc";
-    if (needsArchivedProgressOnly) {
+    if (mode === "lastReadAtAsc" || mode === "lastReadAtDesc") {
       const map = props.metaProgressByPathKey ?? EMPTY_META_PROGRESS;
       const merged = base.map((f) => ({
         ...f,
@@ -303,19 +378,15 @@ export function useReaderSidebarLists(
       }));
       return sortFileList(merged, mode);
     }
-    if (mode !== "progressAsc" && mode !== "progressDesc") {
-      return sortFileList(base, mode);
+    if (mode === "progressAsc" || mode === "progressDesc") {
+      const snap = progressSortSnapshot.value;
+      const merged = base.map((f) => ({
+        ...f,
+        progress: snap.get(fileHistoryKey(f.path)),
+      }));
+      return sortFileList(merged, mode);
     }
-    const map = props.metaProgressByPathKey ?? EMPTY_META_PROGRESS;
-    const cur = props.currentFilePath;
-    const live = props.liveReadingProgressPercent;
-    const merged = base.map((f) => {
-      const key = fileHistoryKey(f.path);
-      const p =
-        cur === f.path && typeof live === "number" ? live : map.get(key);
-      return { ...f, progress: p };
-    });
-    return sortFileList(merged, mode);
+    return sortFileList(base, mode);
   });
 
   const filesFiltered = computed<SidebarFileItem[]>(() => {
@@ -416,6 +487,8 @@ export function useReaderSidebarLists(
   }
 
   function resolveActiveChapterVisibleIndex(): number {
+    const fromPanel = opts?.resolveDisplayedChapterIndex?.();
+    if (typeof fromPanel === "number") return fromPanel;
     const visible = chaptersVisible.value;
     if (visible.length === 0) return -1;
     const full = props.chapters;
@@ -538,6 +611,10 @@ export function useReaderSidebarLists(
     mode: "edge" | "center" = "edge",
     layoutRetry = 0,
   ): Promise<void> {
+    if ((props.fileListViewMode ?? "list") === "tree") {
+      // 树状扁平行索引与 filesFiltered 不一致，由 FileListPanel 滚入视口
+      return;
+    }
     await nextTick();
     const path = props.currentFilePath;
     if (!path) return;
@@ -564,6 +641,24 @@ export function useReaderSidebarLists(
     vl.scrollToIndex(idx, { align: "auto", behavior: "auto" });
   }
 
+  /**
+   * 按「打开时间」排序时：打开列表里已有的文件则刷新一次顺序
+   *（降序排到最前；升序排到有时间记录的末尾）。不在列表中的文件不重排。
+   */
+  watch(
+    () => props.currentFilePath,
+    (path) => {
+      const mode = props.fileSort ?? "nameAsc";
+      if (mode !== "lastReadAtAsc" && mode !== "lastReadAtDesc") return;
+      const p = path?.trim() ?? "";
+      if (!p || !filePathInSidebarList(p)) return;
+      refreshOpenedAtSortSnapshotForOpenedFile(p);
+      void nextTick(() => {
+        void ensureCurrentFileVisible("center");
+      });
+    },
+  );
+
   async function ensureActiveBookmarkVisible(
     mode: "edge" | "center" = "center",
     smooth = true,
@@ -571,18 +666,14 @@ export function useReaderSidebarLists(
     await nextTick();
     const activeLine = props.activeBookmarkLine ?? -1;
     if (activeLine < 0) return;
-    const idx = bookmarksVisible.value.findIndex(
-      (it) => it.line === activeLine,
-    );
-    if (idx < 0) return;
-    const vl = bookmarkListRef.value;
-    if (!vl) return;
+    if (!bookmarksVisible.value.some((it) => it.line === activeLine)) return;
+    const list = bookmarkListRef.value;
+    if (!list) return;
     const behavior = props.inFullscreen ? "auto" : smooth ? "smooth" : "auto";
-    if (mode === "center") {
-      vl.scrollToIndex(idx, { align: "center", behavior });
-      return;
-    }
-    vl.scrollToIndex(idx, { align: "auto", behavior });
+    list.scrollToLine(activeLine, {
+      align: mode === "center" ? "center" : "auto",
+      behavior,
+    });
   }
 
   function onChapterItemClick(chapter: Chapter) {

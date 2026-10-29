@@ -1,6 +1,7 @@
 import { computed, type Ref } from "vue";
 import type ReaderMain from "../components/ReaderMain.vue";
 import {
+  FULLSCREEN_RIGHT_SCROLLBAR_GUTTER_PX,
   maxFullscreenReaderWidthPercent,
   minFullscreenReaderWidthPercent,
 } from "../constants/appUi";
@@ -10,6 +11,7 @@ type ReaderRef = Ref<InstanceType<typeof ReaderMain> | null>;
 
 /**
  * 全屏时正文区域宽度样式，以及 layout 上滚轮/点击转发给阅读器（侧栏内除外）。
+ * 点击模式：左右空白按下开始手势（松开翻页、拖动滚动），与正文区共用 ReaderMain 手势。
  * Mac 触屏/触控板合成 wheel 时 `target` 可能不在侧栏子树内，故结合 `composedPath`、
  * `elementFromPoint` 与沿 ShadowRoot 向上的遍历，避免误劫持侧栏滚动。
  */
@@ -89,26 +91,59 @@ export function useAppFullscreenReaderLayout(deps: {
     return false;
   }
 
+  function isFullscreenBlankSide(ev: MouseEvent | WheelEvent) {
+    const readerPaneEl = readerPaneWrapRef.value;
+    if (!readerPaneEl) return false;
+    const rect = readerPaneEl.getBoundingClientRect();
+    return ev.clientX < rect.left || ev.clientX > rect.right;
+  }
+
+  /** 全屏竖条钉在视口右缘，坐标落在正文矩形外，不能当成左右空白翻页 */
+  function isFullscreenRightScrollbarChrome(ev: MouseEvent) {
+    if (ev.clientX >= window.innerWidth - FULLSCREEN_RIGHT_SCROLLBAR_GUTTER_PX) {
+      return true;
+    }
+    const t = ev.target;
+    return (
+      t instanceof Element &&
+      Boolean(
+        t.closest(
+          ".scrollbar, .slider, .minimap, .decorationsOverviewRuler",
+        ),
+      )
+    );
+  }
+
   function onLayoutMouseDown(ev: MouseEvent) {
     if (!deps.isFullscreenView.value) return;
     if (eventInvolvesFullscreenSidebar(ev)) return;
-    const readerPaneEl = readerPaneWrapRef.value;
-    if (!readerPaneEl) return;
-    const rect = readerPaneEl.getBoundingClientRect();
-    const clickedBlankSide = ev.clientX < rect.left || ev.clientX > rect.right;
-    if (!clickedBlankSide) return;
+    if (!isFullscreenBlankSide(ev)) return;
     ev.preventDefault();
+    if (
+      (ev.button === 0 || ev.button === 2) &&
+      !isFullscreenRightScrollbarChrome(ev) &&
+      deps.readerRef.value?.beginClickModePointerGesture?.(ev)
+    ) {
+      return;
+    }
     deps.readerRef.value?.focusEditor?.();
+  }
+
+  function onLayoutContextMenu(ev: MouseEvent) {
+    if (!deps.isFullscreenView.value) return;
+    if (eventInvolvesFullscreenSidebar(ev)) return;
+    if (!isFullscreenBlankSide(ev)) return;
+    if (isFullscreenRightScrollbarChrome(ev)) return;
+    if (deps.readerRef.value?.shouldSuppressClickModeContextMenu?.()) {
+      ev.preventDefault();
+    }
   }
 
   function onLayoutWheel(ev: WheelEvent) {
     if (!deps.isFullscreenView.value) return;
     if (eventInvolvesFullscreenSidebar(ev)) return;
-    const readerPaneEl = readerPaneWrapRef.value;
-    if (!readerPaneEl) return;
-    const rect = readerPaneEl.getBoundingClientRect();
-    const wheelingBlankSide = ev.clientX < rect.left || ev.clientX > rect.right;
-    if (!wheelingBlankSide) return;
+    if (!isFullscreenBlankSide(ev)) return;
+    if (deps.readerRef.value?.tryHandleReadingRulerWheel?.(ev)) return;
     // 必须先委托：Monaco 的 scrollable 在 `_onMouseWheel` 开头若发现 `defaultPrevented` 会直接 return。
     deps.readerRef.value?.delegateEditorWheelFromBrowserEvent?.(ev);
     ev.preventDefault();
@@ -117,6 +152,7 @@ export function useAppFullscreenReaderLayout(deps: {
   return {
     fullscreenReaderPaneStyle,
     onLayoutMouseDown,
+    onLayoutContextMenu,
     onLayoutWheel,
   };
 }

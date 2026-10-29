@@ -8,7 +8,7 @@ export function useAppChapterListSync() {
   const chapterListScrollSmooth = ref(false);
   /**
    * 为 true 时侧栏将章节列表滚到当前章（居中/滚入视口）。
-   * 由 App 在「阅读器换章 / 恢复进度 / 全屏切换」等场景 pulse 一拍。
+   * 由 App 在「阅读器换章 / 恢复进度 / 全屏或极简切换」等场景 pulse 一拍。
    */
   const shouldCenterChapterList = ref(false);
 

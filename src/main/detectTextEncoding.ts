@@ -163,3 +163,77 @@ export async function detectTextFileEncoding(
   if (bytesRead === 0) return "utf8";
   return detectEncodingFromSample(header.subarray(0, bytesRead), locale);
 }
+
+function isUtf8RequestCharset(charset?: string): boolean {
+  const cs = charset?.trim().toLowerCase();
+  return !cs || cs === "utf-8" || cs === "utf8";
+}
+
+function decodeWithEncoding(raw: Buffer, encoding: string): string | undefined {
+  const normalized = normalizeEncodingName(encoding);
+  if (!iconv.encodingExists(normalized)) return undefined;
+  try {
+    return iconv.decode(raw, normalized);
+  } catch {
+    return undefined;
+  }
+}
+
+/** 从 HTML 头部 meta 标签解析 charset（书源站点常见 gbk 但未写 Content-Type charset） */
+function parseHtmlCharsetFromSample(sample: Buffer): string | undefined {
+  const head = sample.subarray(0, Math.min(sample.length, 8192)).toString("latin1");
+  const meta =
+    head.match(/<meta[^>]+charset=["']?\s*([a-z0-9_-]+)/i) ??
+    head.match(/charset\s*=\s*["']?\s*([a-z0-9_-]+)/i);
+  const enc = meta?.[1]?.trim();
+  if (!enc) return undefined;
+  const normalized = normalizeEncodingName(enc);
+  return iconv.encodingExists(normalized) ? normalized : enc;
+}
+
+export type DecodeHttpResponseBodyOptions = {
+  /** 书源 URL 选项或 searchUrl 内嵌 JSON 指定的 charset */
+  charset?: string;
+  contentType?: string | null;
+  locale?: string;
+};
+
+/**
+ * 解码书源 HTTP 响应体：Content-Type charset → 请求 charset → HTML meta → 字节探测。
+ */
+export function decodeHttpResponseBody(
+  raw: Buffer,
+  opts: DecodeHttpResponseBodyOptions = {},
+): string {
+  const ctCharset = opts.contentType?.match(/charset=([^;]+)/i)?.[1]?.trim();
+  if (ctCharset) {
+    const decoded = decodeWithEncoding(raw, ctCharset);
+    if (decoded != null) return decoded;
+  }
+
+  const reqCharset = opts.charset?.trim();
+  if (reqCharset && !isUtf8RequestCharset(reqCharset)) {
+    const decoded = decodeWithEncoding(raw, reqCharset);
+    if (decoded != null) return decoded;
+  }
+
+  const metaCharset = parseHtmlCharsetFromSample(raw);
+  if (metaCharset) {
+    const decoded = decodeWithEncoding(raw, metaCharset);
+    if (decoded != null) return decoded;
+  }
+
+  if (!reqCharset || isUtf8RequestCharset(reqCharset)) {
+    if (!isValidUtf8(raw)) {
+      const detected = detectEncodingFromSample(raw, opts.locale ?? "zh-CN");
+      if (detected !== "utf8") {
+        const decoded = decodeWithEncoding(raw, detected);
+        if (decoded != null) return decoded;
+      }
+    }
+    return raw.toString("utf8");
+  }
+
+  const decoded = decodeWithEncoding(raw, reqCharset);
+  return decoded ?? raw.toString("utf8");
+}

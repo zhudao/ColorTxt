@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, useTemplateRef } from "vue";
 import type { AiCustomSkill, AiSkillUserOverride } from "@shared/aiSkills";
-import { BUILTIN_AI_SKILLS, effectiveBuiltinSkill } from "@shared/aiSkills";
+import { BUILTIN_AI_SKILLS, effectiveBuiltinSkill, isPipelineOnlyBuiltinSkill } from "@shared/aiSkills";
 import SettingsSkillEditModal, {
   type SkillEditModalMode,
 } from "./SettingsSkillEditModal.vue";
@@ -37,6 +37,7 @@ function skillOn(id: string): boolean {
 }
 
 function setSkill(id: string, on: boolean) {
+  if (isPipelineOnlyBuiltinSkill(id)) return;
   enabled.value = { ...enabled.value, [id]: on };
 }
 
@@ -49,6 +50,7 @@ const builtinCards = computed(() =>
       id: def.id,
       title: def.title,
       description: eff.description,
+      pipelineOnly: isPipelineOnlyBuiltinSkill(def.id),
     };
   }),
 );
@@ -192,8 +194,13 @@ defineExpose({
             </button>
             <SwitchToggle
               size="sm"
-              :model-value="skillOn(card.id)"
-              :ariaLabel="`${card.title}，是否启用`"
+              :model-value="card.pipelineOnly ? false : skillOn(card.id)"
+              :disabled="card.pipelineOnly"
+              :ariaLabel="
+                card.pipelineOnly
+                  ? `${card.title}，仅编辑模式排版使用，不可在 AI 阅读助手中启用`
+                  : `${card.title}，是否启用`
+              "
               @update:model-value="setSkill(card.id, $event)"
             />
           </div>
@@ -265,10 +272,11 @@ defineExpose({
 .settingsBody--skills {
   padding-left: 10px;
   padding-right: 10px;
+  gap: 12px;
 }
 
 .skillsHeader {
-  margin-bottom: 16px;
+  margin-bottom: 4px;
 }
 
 .skillsTips {
@@ -374,7 +382,7 @@ defineExpose({
   display: block;
 }
 
-.skillCardIconBtn .svg :deep(path) {
+.skillCardIconBtn .svg :deep(svg path) {
   fill: currentColor;
 }
 

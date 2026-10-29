@@ -1,0 +1,109 @@
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+  cursor: crosshair;
+  user-select: none;
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    Helvetica,
+    Arial,
+    sans-serif;
+}
+
+#shot {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  image-rendering: pixelated;
+  pointer-events: none;
+}
+
+#loupe {
+  position: fixed;
+  z-index: 4;
+  pointer-events: none;
+  display: none;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+#loupe.is-on {
+  display: flex;
+}
+
+#gridFrame {
+  box-sizing: content-box;
+  border: 0.5px solid #000;
+  padding: 0.5px;
+  background: #fff;
+}
+
+#grid {
+  display: block;
+  background: #111;
+  image-rendering: pixelated;
+}
+
+#info {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 8px 7px;
+  box-sizing: border-box;
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+  text-align: center;
+}
+
+#coords,
+#value {
+  font-size: 13px;
+}
+
+#coords,
+#colorRow,
+#hintCopy,
+#hintShift {
+  color: #fff;
+  font-weight: 400;
+}
+
+#colorRow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+#coords {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+#hintCopy b,
+#hintShift b {
+  font-weight: 700;
+}
+
+#swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 0;
+  border: 0.5px solid #fff;
+  outline: 0.5px solid #000;
+  flex-shrink: 0;
+  box-sizing: border-box;
+}

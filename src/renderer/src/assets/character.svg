@@ -1,11 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" aria-hidden="true">
-  <circle cx="512" cy="512" r="393" fill="none" stroke="currentColor" stroke-width="88" />
+  <circle cx="512" cy="512" r="393" fill="none" stroke="#2c2c2c" stroke-width="88" />
   <path
-    fill="currentColor"
+    fill="#2c2c2c"
     d="M512 716.8a183.5008 183.5008 0 0 0 181.0432-153.6H330.9568A183.5008 183.5008 0 0 0 512 716.8z m233.728-204.8a234.6496 234.6496 0 1 1-467.456 0h467.456z"
   />
   <path
-    fill="currentColor"
+    fill="#2c2c2c"
     d="M375.4496 409.6a58 58 0 1 0 0-116 58 58 0 0 0 0 116zm273.1008 0a58 58 0 1 0 0-116 58 58 0 0 0 0 116z"
   />
 </svg>

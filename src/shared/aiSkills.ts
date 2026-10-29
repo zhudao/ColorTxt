@@ -3,7 +3,10 @@
  * `prompt` 用于后续对话注入；改版前请先用竞品导出对照。
  */
 
-import { CHAPTER_MATCH_RULES_SKILL_ID } from "./aiAgentSkillToolNames";
+import {
+  CHAPTER_MATCH_RULES_SKILL_ID,
+  SMART_FORMAT_SKILL_ID,
+} from "./aiAgentSkillToolNames";
 import type { AIAgentEnabledSkill } from "./aiTypes";
 import {
   chapterMatchBuiltinReferenceBlock,
@@ -483,7 +486,7 @@ export const BUILTIN_AI_SKILLS: readonly AiBuiltinSkill[] = [
   },
   {
     id: CHAPTER_MATCH_RULES_SKILL_ID,
-    title: "章节匹配规则助手",
+    title: "章节匹配",
     description: "根据章节标题样例给出「章节匹配规则」",
     prompt: `# 章节标题匹配规则助手
 
@@ -560,6 +563,68 @@ ${chapterMatchBuiltinReferenceBlock()}
 - 归纳格式须 **ragSearch**（必要时 **ragContext**）；勿剧透叙述剧情。`,
   },
   {
+    id: SMART_FORMAT_SKILL_ID,
+    title: "智能排版",
+    description:
+      "编辑模式「AI 智能排版」的行为",
+    prompt: `# 中文小说标点与排版校对
+
+你是中文小说标点与排版校对助手，在**编辑模式智能排版**中对用户给出的正文片段做局部修正。
+
+## 总体原则
+
+- 禁止改写剧情、人名、数字、语序；禁止润色文风
+- 不要调整空行留白（段间保持与输入相同的空行结构）
+- 只输出修正后的正文，不要解释、不要 Markdown 代码块
+- 无法判断时保持原样
+- **禁止**「的 / 地 / 得」语法互替（如「用力的攥」→「用力地攥」）。网络小说口语里三者混用极常见，此类改动无益且干扰 Diff；原文用哪个就保留哪个
+
+## 硬换行合并
+
+将同一自然段内因网页/PDF 排版产生的句中强行换行合并为一行（中文相邻行之间不加空格）。保留章节标题行、诗歌/歌词、列表、作者刻意单独成行的短句。不要为版式插入或删除空行。
+
+「作者简介」、「内容简介」等标题**下一行起**，若为连贯叙述（非诗歌、非逐条列表），**仍须**合并句中硬换行。「保持原样」仅指站点转载头、作品信息卡（书名/作者/状态等字段堆砌的那种），**不**适用于标题下的正文段落。
+
+## 标点修正
+
+- 修正引号/括号/书名号等配对（「」、『』、“”、（）等）
+- 识别「说：」「道：」等引导词后的对白并补全引号
+- 将中文叙述语境中的半角标点转为全角（如 , . ! ? ; : → ，。！？；：），纠正误用或错位的标点
+- 将误用的半角句点省略（如 ......、... 等连续英文句点）改为中文省略号 ……；勿改数字小数点、URL、英文对白里 intentional 的 ...
+- 对无标点、仅以空格分隔或连成一片的原文按语义断句并补全逗号、句号、问号、叹号等；可删去因断句而多余的空格，但不得增删汉字、不得改语序
+- **不得**借标点修正之机改汉字，包括但不限于「的 / 地 / 得」互替
+- **保留**：数字内小数点（3.14）、英文对白或专名中的半角标点、URL/邮箱、代码片段
+- 诗歌/歌词、刻意留白或已标点规范的段落保持原样；不确定时少加而非乱加
+- 与全书已有标点风格一致
+
+## 统一对话符号
+
+仅对**真正的角色对白**统一引号为目标风格（“” 或 「」）；系统启用时会说明目标与示例。**禁止**改动非对白处引号，例如书名/作者/状态/简介等元信息块（整段『书名…/作者：…』『内容简介：…』）、章节标题、旁白、系统语音、武器、道具、装备、物品名【】、书名号《》、站点转载头或作品信息卡。不确定是否为对白时保持原样。上述「保持原样」**仅指引号**，不禁止在启用硬换行合并时对标题下连贯叙述做换行合并。
+
+## 乱码恢复
+
+将「锟斤拷」「�」等明显乱码替换为合理汉字，修改后上下文语义需通顺连贯；无法确定时删除或保留，不要编造。
+
+## 还原 * 屏蔽
+
+正文中因和谐用「*」代替的字/词，在上下文明确时尽量还原，修改后上下文语义需通顺连贯；勿动整行 * 分隔线。不确定时保留，不要编造。
+
+## 移除盗版水印
+
+删除句中插入的防盗版/反采集杂符（圈号、生僻字夹符号、中英数字乱混等），删除后上下文语义需通顺连贯；不要还原含义，不确定时保留。
+
+## 移除广告/引流信息
+
+删除明显站宣/水印/引流行（域名、求点击、聚合站口号等），删除后上下文语义需通顺连贯。系统启用本子任务时会另行说明细则。
+
+## 输出约束
+
+- 标点修正时仅可增删标点与多余空格，汉字字序必须与输入一致
+- 禁止将「的」改成「地」或「得」，反之亦然；三者均按原文保留
+- 行数与换行结构仅在合并硬换行时允许减少换行
+- 系统消息会注明**本次启用的子任务**，未启用的子任务不要执行`,
+  },
+  {
     id: "character-portrait",
     title: "角色立绘",
     description: "从本书向量检索角色外貌描写，整理 SD 提示词",
@@ -595,13 +660,27 @@ export function isBuiltinSkillId(id: string): boolean {
   return skillIdsSet().has(id);
 }
 
-/** 默认全部启用 */
+/** 仅供编辑模式排版管线使用，不在 AI 阅读助手中注册为工具 */
+export function isPipelineOnlyBuiltinSkill(id: string): boolean {
+  return id === SMART_FORMAT_SKILL_ID;
+}
+
+/** 默认全部启用（智能排版默认关闭：专供编辑模式管线，非对话工具） */
 export function defaultAiSkillsEnabled(): Record<string, boolean> {
   const o: Record<string, boolean> = {};
   for (const s of BUILTIN_AI_SKILLS) {
-    o[s.id] = true;
+    o[s.id] = s.id !== SMART_FORMAT_SKILL_ID;
   }
   return o;
+}
+
+/** 智能排版管线使用的有效提示词（含用户对内置技能的覆盖） */
+export function resolveSmartFormatSkillPrompt(
+  overrides: Record<string, AiSkillUserOverride> | undefined | null,
+): string {
+  const def = BUILTIN_AI_SKILLS.find((s) => s.id === SMART_FORMAT_SKILL_ID);
+  if (!def) return "";
+  return effectiveBuiltinSkill(def, overrides?.[SMART_FORMAT_SKILL_ID]).prompt;
 }
 
 const MAX_SKILL_TITLE_LEN = 80;
@@ -693,6 +772,7 @@ export function collectEnabledAgentSkills(
 ): AIAgentEnabledSkill[] {
   const out: AIAgentEnabledSkill[] = [];
   for (const def of BUILTIN_AI_SKILLS) {
+    if (isPipelineOnlyBuiltinSkill(def.id)) continue;
     if (enabled[def.id] === false) continue;
     const eff = effectiveBuiltinSkill(def, overrides[def.id]);
     out.push({
@@ -729,6 +809,7 @@ export function mergeAiSkillsEnabled(
   const builtinSet = skillIdsSet();
   for (const id of Object.keys(stored)) {
     if (typeof stored[id] !== "boolean") continue;
+    if (isPipelineOnlyBuiltinSkill(id)) continue;
     if (builtinSet.has(id) || customSet.has(id)) {
       base[id] = stored[id]!;
     }

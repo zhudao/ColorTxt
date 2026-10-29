@@ -79,3 +79,35 @@ export function highlightColorsPersistPayload(
   }
   return [...current];
 }
+
+/** 选区工具条「高亮词」上次选用的色槽下标（默认首色） */
+export const DEFAULT_HIGHLIGHT_LAST_COLOR = 0;
+
+/** 将下标映射到当前高亮色盘；无效或越界时回退到最后一色 */
+export function clampHighlightColorIndex(
+  index: number,
+  colorCount?: number,
+): number {
+  const count = Math.max(
+    MIN_HIGHLIGHT_COLORS,
+    colorCount ?? DEFAULT_HIGHLIGHT_COLORS_LIGHT.length,
+  );
+  const last = count - 1;
+  if (!Number.isFinite(index)) return last;
+  const i = Math.floor(index);
+  if (i < 0 || i >= count) return last;
+  return i;
+}
+
+/** 持久化读回：保留原始下标，由 {@link clampHighlightLastColorToCount} 按当前色盘长度夹取 */
+export function parseHighlightLastColor(raw: unknown): number {
+  if (!Number.isFinite(Number(raw))) return DEFAULT_HIGHLIGHT_LAST_COLOR;
+  return Math.max(0, Math.floor(Number(raw)));
+}
+
+export function clampHighlightLastColorToCount(
+  index: number,
+  colorCount: number,
+): number {
+  return clampHighlightColorIndex(index, colorCount);
+}

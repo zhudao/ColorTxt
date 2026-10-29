@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import playSvg from "../assets/play.svg?raw";
+import { icons } from "../icons";
 
 defineProps<{
   visible: boolean;
@@ -26,7 +26,7 @@ const emit = defineEmits<{
         aria-label="从视口中心行开始播放"
         @click="emit('resume')"
       >
-        <span class="voiceReadResumeGuidePlayIcon" v-html="playSvg" />
+        <span class="voiceReadResumeGuidePlayIcon" v-html="icons.play" />
       </button>
     </div>
   </div>
@@ -96,7 +96,7 @@ const emit = defineEmits<{
   display: block;
 }
 
-.voiceReadResumeGuidePlayIcon :deep(path) {
+.voiceReadResumeGuidePlayIcon :deep(svg path) {
   fill: currentColor;
 }
 </style>

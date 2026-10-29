@@ -235,7 +235,7 @@ function cancelManageModal() {
   overflow-x: hidden;
   overflow-y: scroll;
   flex: 0 1 auto;
-  height: 251px;
+  /* height: 251px; */
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg);
@@ -321,7 +321,7 @@ function cancelManageModal() {
   display: block;
 }
 
-.highlightAddBtnIcon :deep(path) {
+.highlightAddBtnIcon :deep(svg path) {
   fill: currentColor;
 }
 

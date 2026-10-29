@@ -162,6 +162,20 @@ export function keyboardEventToAccelerator(ev: KeyboardEvent): string {
   return normalizeAccelerator([...mods, key].join("+"));
 }
 
+/** 只持久化相对当前默认有改动的项（空对象也要写入，才能在「全部还原默认」时清掉磁盘覆盖）。 */
+export function shortcutBindingOverridesForPersist(
+  defaults: ShortcutBindingMap,
+  bindings: ShortcutBindingMap,
+): Partial<Record<ShortcutActionId, string>> {
+  const out: Partial<Record<ShortcutActionId, string>> = {};
+  for (const action of SHORTCUT_ACTIONS) {
+    const cur = normalizeAccelerator(bindings[action.id]);
+    const def = normalizeAccelerator(defaults[action.id]);
+    if (cur && cur !== def) out[action.id] = cur;
+  }
+  return out;
+}
+
 export function mergeShortcutBindings(
   defaults: ShortcutBindingMap,
   loaded?: Partial<Record<ShortcutActionId, string>>,
@@ -219,4 +233,14 @@ export function acceleratorToDisplayText(
   isMac: boolean,
 ): string {
   return acceleratorToDisplayKeys(accel, isMac).join("+");
+}
+
+/** 图标按钮 `title`：有绑定时追加「 (Ctrl+=)」 */
+export function titleWithShortcut(
+  label: string,
+  accel: string,
+  isMac: boolean,
+): string {
+  const text = acceleratorToDisplayText(accel, isMac).trim();
+  return text ? `${label} (${text})` : label;
 }

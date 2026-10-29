@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { ColorTxtOpenDialogOptions } from "@shared/colorTxtOpenSaveDialog";
 import { computed, ref } from "vue";
 import { icons } from "../icons";
 
@@ -13,6 +14,8 @@ const props = withDefaults(
     disabled?: boolean;
     /** 无障碍名称；缺省用 placeholder 或「文件/目录路径」 */
     ariaLabel?: string;
+    /** 文件选择对话框扩展名过滤（仅 `isDirectory=false` 时生效） */
+    filters?: ColorTxtOpenDialogOptions["filters"];
   }>(),
   {
     modelValue: "",
@@ -103,11 +106,13 @@ async function onBrowse() {
   if (props.disabled) return;
   const api = window.colorTxt;
   if (!api?.showOpenDialog) return;
-  const r = await api.showOpenDialog(
-    props.isDirectory
-      ? { properties: ["openDirectory"] }
-      : { properties: ["openFile"] },
-  );
+  const options: ColorTxtOpenDialogOptions = props.isDirectory
+    ? { properties: ["openDirectory"] }
+    : { properties: ["openFile"] };
+  if (!props.isDirectory && props.filters?.length) {
+    options.filters = props.filters;
+  }
+  const r = await api.showOpenDialog(options);
   const p =
     r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0];
   if (p) setPath(p);
@@ -216,7 +221,7 @@ function onInput(ev: Event) {
   display: block;
 }
 
-.pathPicker__icon :deep(path) {
+.pathPicker__icon :deep(svg path) {
   fill: currentColor;
 }
 </style>

@@ -8,8 +8,18 @@ export function useSortableReorder(opts: {
   containerRef: Ref<HTMLElement | null>;
   /** 可拖动子项，默认 `tr` */
   draggable?: string;
-  /** 拖动手柄选择器，默认 `.sortableRowHandle` */
-  handle?: string;
+  /**
+   * 拖动手柄选择器，默认 `.sortableRowHandle`。
+   * 传 `false` 表示整项可拖（如 InputTag 标签）。
+   */
+  handle?: string | false;
+  /** 忽略拖动起始的选择器（如标签上的删除钮） */
+  filter?: string;
+  /**
+   * 为 true 时用 oldDraggableIndex/newDraggableIndex
+   *（容器内还有 input 等非 draggable 兄弟时需要）
+   */
+  preferDraggableIndex?: boolean;
   enabled?: Ref<boolean>;
   /** 为 false 时不挂载（如弹窗关闭） */
   active?: Ref<boolean>;
@@ -40,15 +50,22 @@ export function useSortableReorder(opts: {
     }
     destroy();
     sortable = Sortable.create(el, {
-      handle: opts.handle ?? `.${SORTABLE_ROW_HANDLE_CLASS}`,
+      ...(opts.handle === false
+        ? {}
+        : { handle: opts.handle ?? `.${SORTABLE_ROW_HANDLE_CLASS}` }),
       draggable: opts.draggable ?? "tr",
+      ...(opts.filter ? { filter: opts.filter, preventOnFilter: true } : {}),
       animation: 150,
       ghostClass: "sortableRowGhost",
       chosenClass: "sortableRowChosen",
       dragClass: "sortableRowDrag",
       onEnd(evt: SortableEvent) {
-        const oldIndex = evt.oldIndex;
-        const newIndex = evt.newIndex;
+        const oldIndex = opts.preferDraggableIndex
+          ? evt.oldDraggableIndex
+          : evt.oldIndex;
+        const newIndex = opts.preferDraggableIndex
+          ? evt.newDraggableIndex
+          : evt.newIndex;
         if (oldIndex == null || newIndex == null || oldIndex === newIndex) return;
         opts.onReorder(oldIndex, newIndex);
       },

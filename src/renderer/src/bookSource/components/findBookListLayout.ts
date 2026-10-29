@@ -1,0 +1,5 @@
+/** 搜索 / 发现书籍列表：封面 102 + 内边距 20 */
+export const FIND_BOOK_LIST_ITEM_HEIGHT = 122;
+export const FIND_BOOK_LIST_ROW_GAP = 10;
+export const FIND_BOOK_LIST_ROW_STRIDE =
+  FIND_BOOK_LIST_ITEM_HEIGHT + FIND_BOOK_LIST_ROW_GAP;

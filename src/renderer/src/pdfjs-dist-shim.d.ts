@@ -1,3 +1,22 @@
+declare module "pdfjs-dist/image_decoders/pdf.image_decoders.mjs" {
+  export class JpxImage {
+    static setOptions(opts: {
+      useWasm?: boolean;
+      useWorkerFetch?: boolean;
+      wasmUrl?: string;
+    }): void;
+    static decode(
+      data: Uint8Array,
+      opts?: { numComponents?: number },
+    ): Promise<Uint8Array | Uint8ClampedArray | null>;
+  }
+  export class Jbig2Image {
+    parseChunks(
+      chunks: Array<{ data: Uint8Array; start: number; end: number }>,
+    ): Uint8Array | null;
+  }
+}
+
 declare module "pdfjs-dist/legacy/build/pdf.mjs" {
   export const GlobalWorkerOptions: { workerSrc: string };
   export const ImageKind: {

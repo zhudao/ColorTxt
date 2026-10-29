@@ -15,7 +15,9 @@ const SD_BACKENDS: readonly AITxt2ImgBackend[] = [
 
 const NATURAL_BACKENDS: readonly AITxt2ImgBackend[] = [
   "openai_images",
+  "agnes_images",
   "dashscope_wanx",
+  "minimax_images",
   "openai_compat_images",
 ];
 
@@ -54,7 +56,9 @@ export const TXT2IMG_DEFAULT_CLOUD_MODEL: Record<
   string
 > = {
   openai_images: "gpt-image-2",
+  agnes_images: "agnes-image-2.1-flash",
   dashscope_wanx: "wan2.6-t2i",
+  minimax_images: "image-01",
   stability: "ultra",
   openai_compat_images: "gpt-image-2",
 };
@@ -112,6 +116,16 @@ function snapStabilityDimension(n: number): number {
 
 /** Stability SD3 `aspect_ratio` */
 export function stabilityAspectRatio(size: Txt2ImgResolvedSize): string {
+  const ratio = size.width / size.height;
+  if (ratio > 1.25) return "16:9";
+  if (ratio > 1.05) return "3:2";
+  if (ratio < 0.8) return "9:16";
+  if (ratio < 0.95) return "2:3";
+  return "1:1";
+}
+
+/** MiniMax Image `aspect_ratio`（官方支持 1:1、16:9、9:16 等） */
+export function minimaxAspectRatio(size: Txt2ImgResolvedSize): string {
   const ratio = size.width / size.height;
   if (ratio > 1.25) return "16:9";
   if (ratio > 1.05) return "3:2";

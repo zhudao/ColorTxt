@@ -1,6 +1,6 @@
 /**
  * MOBI → Markdown：基于 foliate-js 的 mobi.js 解析 PDB/MOBI6/KF8，
- * 输出 `<span id>`、MD 内/外链与块级 `![…](rel)`。
+ * 输出 `<span id>`、MD 内/外链与图片 `![…](rel)`（段落内为行内字形图）。
  */
 import { inflate } from "pako";
 import { MOBI, isMOBI } from "./mobi/foliateMobi.js";
@@ -433,16 +433,6 @@ async function exportImageRelFromBuffer(
   return rel;
 }
 
-async function pushImageFromBuffer(
-  data: ArrayBuffer,
-  dedupeKey: string,
-  ctx: MobiImageCtx,
-  out: string[],
-): Promise<void> {
-  const rel = await exportImageRelFromBuffer(data, dedupeKey, ctx);
-  if (rel) out.push(formatMdBlockImage(rel));
-}
-
 async function loadMobiImageFromElement(
   el: Element,
   innerMobi: InnerMobi,
@@ -525,14 +515,12 @@ async function appendInlineLinkIconToMobiAcc(
   if (iconRel && !ctx.footnoteIconRel) {
     ctx.footnoteIconRel = iconRel;
   }
-  const slash = hoverTip.indexOf("/");
   const anchorKey = anchorKeyOf(anchorEl);
   appendAnchorIdMarkBeforeIfNeeded(acc, ctx, sectionStem, anchorKey, targetId);
   appendMobiMdLink(acc, ctx, targetId, {
     label,
     iconRel,
-    title: slash >= 0 ? hoverTip.slice(0, slash) : hoverTip,
-    alt: slash >= 0 ? hoverTip.slice(slash + 1) : undefined,
+    title: hoverTip,
   });
   appendNoterefBackAnchorAfterLinkIfNeeded(
     acc,
@@ -620,15 +608,23 @@ async function resolveMobiLinkIconTarget(
   return null;
 }
 
-async function handleMobiImageElement(
+async function appendInlineMobiImageToAcc(
+  acc: { text: string },
   el: Element,
-  out: string[],
   ctx: MobiImageCtx,
   innerMobi: InnerMobi,
 ): Promise<void> {
   const loaded = await loadMobiImageFromElement(el, innerMobi);
   if (!loaded) return;
-  await pushImageFromBuffer(loaded.buf, loaded.dedupeKey, ctx, out);
+  const rel = await exportImageRelFromBuffer(
+    loaded.buf,
+    loaded.dedupeKey,
+    ctx,
+  );
+  if (rel) {
+    const alt = el.getAttribute("alt")?.trim() ?? "";
+    acc.text += formatMdBlockImage(rel, alt);
+  }
 }
 
 async function flushParagraph(acc: { text: string }, out: string[]): Promise<void> {
@@ -741,12 +737,11 @@ async function walkMobiBlock(
       if (idAttr) {
         acc.text += mobiSpanAnchorForElementId(ctx, sectionStem, idAttr);
       }
-      await flushParagraph(acc, out);
-      await handleMobiImageElement(child, out, ctx, innerMobi);
+      await appendInlineMobiImageToAcc(acc, child, ctx, innerMobi);
       continue;
     }
     if (tag === "br" || tag === "hr") {
-      acc.text += " ";
+      await flushParagraph(acc, out);
       continue;
     }
     if (tag === "a") {
@@ -798,7 +793,6 @@ async function walkMobiBlock(
             tid,
           );
           const hover = resolveLinkIconHoverTip(child, child);
-          const slash = hover.indexOf("/");
           appendMobiMdLink(acc, ctx, tid, {
             label,
             iconRel:
@@ -808,8 +802,7 @@ async function walkMobiBlock(
               isInsideNoterefContext(child)
                 ? ctx.footnoteIconRel
                 : undefined,
-            title: slash >= 0 ? hover.slice(0, slash) : hover,
-            alt: slash >= 0 ? hover.slice(slash + 1) : undefined,
+            title: hover,
           });
           appendNoterefBackAnchorAfterLinkIfNeeded(
             acc,

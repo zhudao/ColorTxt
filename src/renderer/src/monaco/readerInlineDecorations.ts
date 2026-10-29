@@ -1,6 +1,4 @@
 import type * as monaco from "monaco-editor";
-import { chapterTitleForDisplay } from "../chapter";
-import { plainTextForEbookTitleMatch } from "../ebook/ebookTitleMatch";
 import type { ReaderSurfacePalette } from "../constants/readerPalette";
 import {
   CHAPTER_TITLE_LINE_CLASS,
@@ -39,6 +37,7 @@ function readerEditorHighlightColors(
 ): Pick<
   Record<string, string>,
   | "editor.lineHighlightBackground"
+  | "editor.lineHighlightBorder"
   | "editor.selectionBackground"
   | "minimap.selectionHighlight"
   | "minimap.selectionOccurrenceHighlight"
@@ -46,6 +45,7 @@ function readerEditorHighlightColors(
   if (variant === "dark") {
     return {
       "editor.lineHighlightBackground": hex8("#ffffff", 0.07),
+      "editor.lineHighlightBorder": "#00000000",
       "editor.selectionBackground": hex8("#264F78", 0.45),
       /** 小地图选区：Monaco 行高亮会再叠 50% 透明，字符级选区为实色 */
       "minimap.selectionHighlight": "#264F78",
@@ -54,6 +54,7 @@ function readerEditorHighlightColors(
   }
   return {
     "editor.lineHighlightBackground": hex8("#000000", 0.05),
+    "editor.lineHighlightBorder": "#00000000",
     "editor.selectionBackground": hex8("#ADD6FF", 0.55),
     "minimap.selectionHighlight": "#ADD6FF",
     "minimap.selectionOccurrenceHighlight": hex8("#c9c9c9", 0.55),
@@ -77,11 +78,15 @@ function readerChromeThemeColors(
     "editor.background": EDITOR_BACKGROUND_TRANSPARENT,
     "editor.foreground": palette.bodyText,
     "minimap.background": surfaceBg,
-    /** 滚动条轨道与小地图同色；光标标记在概览尺 Canvas 上，叠在轨道之上（见 readerMainMonaco.css） */
-    "scrollbar.background": surfaceBg,
+    /** 轨道透明，露出阅读区背景图；点击/拖动仍落在 `.scrollbar` 上 */
+    "scrollbar.background": EDITOR_BACKGROUND_TRANSPARENT,
     /** 概览尺 Canvas 透明底，仅绘制光标/装饰标记 */
     "editorOverviewRuler.background": EDITOR_BACKGROUND_TRANSPARENT,
     "editorOverviewRuler.border": READER_OVERVIEW_RULER_BORDER,
+    "menu.background": surfaceBg,
+    "menu.foreground": palette.bodyText,
+    /** 笔记/装饰 hover 时不高亮原文 range（Monaco `.hoverHighlight`） */
+    "editor.hoverHighlightBackground": "#00000000",
     ...readerEditorHighlightColors(variant),
   };
   if (variant === "dark") {
@@ -155,7 +160,22 @@ function buildTxtrTokenRules(
 }
 
 /**
- * 注入 vs / vs-dark 的 Monarch token 颜色；编辑器背景透明以透出 var(--reader-bg)。
+ * 阅读器专用 Monaco 主题名（勿覆写内置 `vs` / `vs-dark`，以免污染书源全屏编辑等）。
+ * 应用壳主题仍用 `vs` / `vs-dark`；经 {@link readerMonacoThemeForAppTheme} 映射。
+ */
+export const READER_MONACO_THEME_LIGHT = "txtr-reader";
+export const READER_MONACO_THEME_DARK = "txtr-reader-dark";
+
+/** 应用壳主题（`vs` / `vs-dark`）→ 阅读器 Monaco 主题 */
+export function readerMonacoThemeForAppTheme(themeName: string): string {
+  return themeName === "vs"
+    ? READER_MONACO_THEME_LIGHT
+    : READER_MONACO_THEME_DARK;
+}
+
+/**
+ * 注入阅读器 Monarch token 颜色；编辑器背景透明以透出 var(--reader-bg)。
+ * 阅读器已关 `roundedSelection`，避免列重叠选区的抠图层盖住背景图。
  * 应在注册 Monarch 之后、setTheme 之前调用一次；调色板变更时可再调用。
  */
 export function ensureReaderSyntaxThemes(
@@ -164,13 +184,13 @@ export function ensureReaderSyntaxThemes(
   darkPalette: ReaderSurfacePalette,
   highlightColors: readonly string[],
 ): void {
-  monacoApi.editor.defineTheme("vs-dark", {
+  monacoApi.editor.defineTheme(READER_MONACO_THEME_DARK, {
     base: "vs-dark",
     inherit: true,
     rules: buildTxtrTokenRules(darkPalette, highlightColors),
     colors: readerThemeEditorColors(darkPalette, "dark"),
   });
-  monacoApi.editor.defineTheme("vs", {
+  monacoApi.editor.defineTheme(READER_MONACO_THEME_LIGHT, {
     base: "vs",
     inherit: true,
     rules: buildTxtrTokenRules(lightPalette, highlightColors),
@@ -180,7 +200,7 @@ export function ensureReaderSyntaxThemes(
 
 /**
  * 开关 Monaco 中 txtr.* 的语法着色（标点/数字/英文/引号内/括号内等）。
- * 关闭时仅继承 vs / vs-dark 默认前景；背景仍透明以透出阅读区底色。
+ * 关闭时仅继承 base 默认前景；背景仍透明以透出阅读区底色。
  */
 export function setReaderSyntaxHighlightEnabled(
   monacoApi: typeof import("monaco-editor"),
@@ -198,13 +218,13 @@ export function setReaderSyntaxHighlightEnabled(
     );
     return;
   }
-  monacoApi.editor.defineTheme("vs-dark", {
+  monacoApi.editor.defineTheme(READER_MONACO_THEME_DARK, {
     base: "vs-dark",
     inherit: true,
     rules: [],
     colors: readerThemeEditorColors(darkPalette, "dark"),
   });
-  monacoApi.editor.defineTheme("vs", {
+  monacoApi.editor.defineTheme(READER_MONACO_THEME_LIGHT, {
     base: "vs",
     inherit: true,
     rules: [],
@@ -212,27 +232,28 @@ export function setReaderSyntaxHighlightEnabled(
   });
 }
 
-/** 章节标题样式仅覆盖标题文案，勿盖住同行尾部的 MD 内链图标占位 */
+/** Monaco 装饰 endColumn（exclusive）：整行 trimEnd 后的末尾 */
+function trimmedLineEndColumn(lineText: string): number {
+  const len = lineText.trimEnd().length;
+  return len > 0 ? len + 1 : 1;
+}
+
+/**
+ * 章节标题行内样式 endColumn。
+ * 章节标题独占展示行；行内 MD 文字链接保留完整 label（非图标 `\u3000` 单字占位），
+ * 侧栏/匹配用 {@link plainTextForEbookTitleMatch} 会剥链接语法且不含 label，勿用 `want.length` 推算列范围。
+ */
 function chapterTitleStyleEndColumn(
   model: monaco.editor.ITextModel,
   lineNumber: number,
-  title: string,
 ): number {
-  const want = chapterTitleForDisplay(title);
-  if (!want) return model.getLineMaxColumn(lineNumber);
-  const lineText = model.getLineContent(lineNumber);
-  const plain = chapterTitleForDisplay(plainTextForEbookTitleMatch(lineText));
-  if (plain === want || plain.startsWith(want)) {
-    if (lineText.startsWith(want)) {
-      return 1 + want.length;
-    }
-  }
-  return Math.min(model.getLineMaxColumn(lineNumber), 1 + want.length);
+  return trimmedLineEndColumn(model.getLineContent(lineNumber));
 }
 
 /**
  * 构建章节标题的 Monaco 模型装饰（仅 `inlineClassName` 着色）。
- * 标题前后留白由 {@link formatPhysicalLinesForReader} 在开启「压缩空行」时插入空行实现。
+ * 标题上下空行由 {@link formatPhysicalLinesForReader} 在开启「压缩空行」时按
+ * `chapterTitleBlankMode`（默认 `before2After1`）插入。
  */
 export function buildChapterTitleDecorations(
   monacoApi: typeof import("monaco-editor"),
@@ -252,7 +273,7 @@ export function buildChapterTitleDecorations(
         ch.lineNumber,
         1,
         ch.lineNumber,
-        chapterTitleStyleEndColumn(model, ch.lineNumber, ch.title),
+        chapterTitleStyleEndColumn(model, ch.lineNumber),
       ),
       options: {
         inlineClassName: CHAPTER_TITLE_LINE_CLASS,

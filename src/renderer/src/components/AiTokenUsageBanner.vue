@@ -1,19 +1,28 @@
 <script setup lang="ts">
 import type { AITokenPricePerMillion } from "@shared/aiTypes";
 import type { AITokenUsageTotals } from "@shared/aiTokenUsage";
-import { formatTokenUsageActualLine } from "@shared/aiTokenUsage";
+import { formatTokenUsageSummaryLine } from "@shared/aiTokenUsage";
 
-defineProps<{
-  usage: AITokenUsageTotals;
-  available: boolean;
-  tokenPricePerMillion?: AITokenPricePerMillion | null;
-}>();
+const props = withDefaults(
+  defineProps<{
+    usage: AITokenUsageTotals;
+    available: boolean;
+    tokenPricePerMillion?: AITokenPricePerMillion | null;
+    label?: string;
+  }>(),
+  { label: "本次对话消耗 Token" },
+);
 </script>
 
 <template>
   <p class="aiTokenUsageBanner" role="status" aria-live="polite">
     {{
-      formatTokenUsageActualLine(usage, available, tokenPricePerMillion ?? null)
+      formatTokenUsageSummaryLine(
+        props.usage,
+        props.available,
+        props.tokenPricePerMillion ?? null,
+        props.label,
+      )
     }}
   </p>
 </template>

@@ -2,6 +2,10 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { AIConfig } from "@shared/aiTypes";
 import {
+  REMOTE_EMBEDDING_BATCH_SIZE_MAX,
+  REMOTE_EMBEDDING_BATCH_SIZE_MIN,
+} from "@shared/aiTypes";
+import {
   BUILTIN_EMBEDDING_MODELS,
   BUILTIN_EMBEDDING_SUPPORTS_RAG_TOP_K,
   DEFAULT_BUILTIN_EMBEDDING_MODEL_ID,
@@ -323,8 +327,9 @@ async function refreshEmbedModels(opts?: { pullDone?: AppPullFlashDone }) {
   }
 }
 
-/** 远程嵌入：聚焦模型输入且尚无建议列表时静默拉取（与原先下拉展开行为一致） */
-function onRemoteEmbedModelFocusIn() {
+/** 远程嵌入：聚焦模型输入且尚无建议列表时静默拉取。按钮聚焦不触发，避免抢先把「拉取模型」点成静默请求。 */
+function onRemoteEmbedModelFocusIn(ev: FocusEvent) {
+  if (!(ev.target instanceof HTMLInputElement)) return;
   if (isBuiltin.value || embedModelsLoading.value) return;
   if (embedModelOptions.value.length > 0) return;
   void refreshEmbedModels();
@@ -678,11 +683,32 @@ async function runEmbedConnectionTest(): Promise<ConnectionTestResult> {
               </div>
             </div>
             <p class="aiMasterHint">
+              向量模型通常带有 <code>embedding</code><code>embed</code><code>bge</code> 等关键词。
+            </p>
+            <p class="aiMasterHint">
+              如果模型列表里没有向量模型，可能是服务商暂时还不支持嵌入模型，或者需要手动输入 <code>模型 ID</code>。
+            </p>
+            <p class="aiMasterHint">
               建议使用 <code>BGE Small ZH v1.5</code
               ><code>Multilingual E5 Small</code> 等支持 <b>中文</b> 的嵌入模型。
             </p>
-            <p class="aiMasterHint">
-              向量模型通常带有 <code>embedding</code><code>embed</code><code>bge</code> 等关键词；<br />如果向量模型没有出现在模型列表里，可能是服务商暂时还不支持嵌入模型，或者需要手动输入 <code>模型 ID</code>。
+          </div>
+          <div class="settingsRow">
+            <div class="settingsRowMain settingsRowMain--baseline">
+              <span class="settingsLabel"
+                >单次嵌入条数（{{
+                  modelValue.embedding.remoteEmbedBatchSize
+                }}）</span
+              >
+              <NumericInput
+                v-model="modelValue.embedding.remoteEmbedBatchSize"
+                :min="REMOTE_EMBEDDING_BATCH_SIZE_MIN"
+                :max="REMOTE_EMBEDDING_BATCH_SIZE_MAX"
+                integer
+              />
+            </div>
+            <p class="settingsHint">
+              建立向量索引时，每批向远程接口提交的文本块数量；不能超过服务商限制，否则会返回 HTTP 400。
             </p>
           </div>
         </template>
@@ -698,7 +724,6 @@ async function runEmbedConnectionTest(): Promise<ConnectionTestResult> {
                 :min="64"
                 :max="8192"
                 integer
-                class="numCompact"
               />
               <button
                 type="button"
@@ -737,7 +762,6 @@ async function runEmbedConnectionTest(): Promise<ConnectionTestResult> {
               :min="1"
               :max="20"
               integer
-              class="numCompact"
             />
           </div>
           <p class="settingsHint">
@@ -789,14 +813,6 @@ async function runEmbedConnectionTest(): Promise<ConnectionTestResult> {
   font-size: 12px;
   line-height: 1.45;
   color: var(--muted);
-}
-
-.aiMasterHint code,
-.settingsHint code {
-  font-size: 11px;
-  padding: 2px 4px;
-  border-radius: 4px;
-  background: var(--panel-elevated, rgba(127, 127, 127, 0.12));
 }
 
 .aiSectionTitle {
@@ -996,11 +1012,6 @@ async function runEmbedConnectionTest(): Promise<ConnectionTestResult> {
 .aiModelSelect--full {
   flex: 1 1 100%;
 }
-
-.numCompact {
-  width: 120px;
-}
-
 .embedDimRow {
   display: flex;
   flex-wrap: wrap;

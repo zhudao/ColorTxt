@@ -140,10 +140,11 @@ export function formatTokenUsageCost(amount: number): string {
   return `¥${trimFixedDecimalZeros(n.toFixed(digits))}`;
 }
 
-export function formatTokenUsageActualLine(
+export function formatTokenUsageSummaryLine(
   usage: AITokenUsageTotals,
   available: boolean,
   pricePerMillion?: AITokenPricePerMillion | null,
+  label = "本次对话消耗 Token",
 ): string {
   if (!available) {
     return "未能从模型服务获取本次 token 用量（请确认接口支持 usage / stream_options.include_usage）";
@@ -153,10 +154,23 @@ export function formatTokenUsageActualLine(
   if (hit > 0) {
     inputPart += `（缓存命中 ${formatTokenCount(hit)}）`;
   }
-  let line = `本次对话消耗 Token：${formatTokenCount(usage.totalTokens)}（${inputPart}，输出 ${formatTokenCount(usage.completionTokens)}）`;
+  let line = `${label}：${formatTokenCount(usage.totalTokens)}（${inputPart}，输出 ${formatTokenCount(usage.completionTokens)}）`;
   const cost = computeTokenUsageCost(usage, pricePerMillion);
   if (cost != null) {
     line += `，总花费约：${formatTokenUsageCost(cost)}`;
   }
   return line;
+}
+
+export function formatTokenUsageActualLine(
+  usage: AITokenUsageTotals,
+  available: boolean,
+  pricePerMillion?: AITokenPricePerMillion | null,
+): string {
+  return formatTokenUsageSummaryLine(
+    usage,
+    available,
+    pricePerMillion,
+    "本次对话消耗 Token",
+  );
 }

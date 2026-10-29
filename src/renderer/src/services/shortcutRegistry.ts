@@ -1,5 +1,8 @@
 type ShortcutScope = "window" | "global";
 
+/** 快捷键面板展示上下文：主窗与找书窗列表项不同 */
+export type ShortcutPanelContext = "main" | "findBook";
+
 export type ShortcutActionId =
   | "openFile"
   | "pickTxtDirectory"
@@ -13,14 +16,31 @@ export type ShortcutActionId =
   | "increaseFontSize"
   | "decreaseLineHeight"
   | "increaseLineHeight"
+  | "decreaseLetterSpacing"
+  | "increaseLetterSpacing"
+  | "decreaseParagraphSpacing"
+  | "increaseParagraphSpacing"
+  | "decreaseHorizontalInset"
+  | "increaseHorizontalInset"
   | "toggleFind"
+  | "openSidebarSearch"
+  | "openSidebarFiles"
+  | "openSidebarChapters"
+  | "openSidebarAiAssistant"
+  | "toggleReaderEdit"
+  | "editSelectedText"
   | "openChapterRules"
   | "toggleBookmark"
   | "toggleSidebar"
+  | "toggleMinimalistView"
   | "toggleFullscreen"
+  | "toggleTheme"
   | "openSettings"
   | "openColorScheme"
+  | "openFindBook"
+  | "openBookSource"
   | "openNewWindow"
+  | "enterStealthReader"
   | "toggleAllWindowsVisibility";
 
 type ShortcutActionDef = {
@@ -29,6 +49,23 @@ type ShortcutActionDef = {
   desc: string;
   handlerKey: ShortcutActionId;
 };
+
+/** 主窗口快捷键面板不展示（仅找书窗使用） */
+const MAIN_PANEL_HIDDEN_ACTION_IDS = new Set<ShortcutActionId>([
+  "openBookSource",
+]);
+
+/** 找书窗口快捷键面板不展示（仅主窗使用） */
+const FIND_BOOK_PANEL_HIDDEN_ACTION_IDS = new Set<ShortcutActionId>([
+  "openFile",
+  "pickTxtDirectory",
+  "openChapterRules",
+  "toggleBookmark",
+  "openSidebarSearch",
+  "openSidebarFiles",
+  "openSidebarChapters",
+  "openSidebarAiAssistant",
+]);
 
 export const SHORTCUT_ACTIONS: ShortcutActionDef[] = [
   { id: "openFile", scope: "window", desc: "打开文件", handlerKey: "openFile" },
@@ -55,13 +92,13 @@ export const SHORTCUT_ACTIONS: ShortcutActionDef[] = [
   {
     id: "jumpPrevChapter",
     scope: "window",
-    desc: "上一章节",
+    desc: "上一章",
     handlerKey: "jumpPrevChapter",
   },
   {
     id: "jumpNextChapter",
     scope: "window",
-    desc: "下一章节",
+    desc: "下一章",
     handlerKey: "jumpNextChapter",
   },
   {
@@ -79,16 +116,88 @@ export const SHORTCUT_ACTIONS: ShortcutActionDef[] = [
   {
     id: "decreaseLineHeight",
     scope: "window",
-    desc: "减小行高",
+    desc: "减小行间距",
     handlerKey: "decreaseLineHeight",
   },
   {
     id: "increaseLineHeight",
     scope: "window",
-    desc: "加大行高",
+    desc: "加大行间距",
     handlerKey: "increaseLineHeight",
   },
+  {
+    id: "decreaseLetterSpacing",
+    scope: "window",
+    desc: "减小字间距",
+    handlerKey: "decreaseLetterSpacing",
+  },
+  {
+    id: "increaseLetterSpacing",
+    scope: "window",
+    desc: "加大字间距",
+    handlerKey: "increaseLetterSpacing",
+  },
+  {
+    id: "decreaseParagraphSpacing",
+    scope: "window",
+    desc: "减小段间距",
+    handlerKey: "decreaseParagraphSpacing",
+  },
+  {
+    id: "increaseParagraphSpacing",
+    scope: "window",
+    desc: "加大段间距",
+    handlerKey: "increaseParagraphSpacing",
+  },
+  {
+    id: "decreaseHorizontalInset",
+    scope: "window",
+    desc: "减小左右边距",
+    handlerKey: "decreaseHorizontalInset",
+  },
+  {
+    id: "increaseHorizontalInset",
+    scope: "window",
+    desc: "加大左右边距",
+    handlerKey: "increaseHorizontalInset",
+  },
   { id: "toggleFind", scope: "window", desc: "查找", handlerKey: "toggleFind" },
+  {
+    id: "openSidebarSearch",
+    scope: "window",
+    desc: "侧边栏：搜索",
+    handlerKey: "openSidebarSearch",
+  },
+  {
+    id: "openSidebarFiles",
+    scope: "window",
+    desc: "侧边栏：文件",
+    handlerKey: "openSidebarFiles",
+  },
+  {
+    id: "openSidebarChapters",
+    scope: "window",
+    desc: "侧边栏：章节",
+    handlerKey: "openSidebarChapters",
+  },
+  {
+    id: "openSidebarAiAssistant",
+    scope: "window",
+    desc: "侧边栏：AI 阅读助手",
+    handlerKey: "openSidebarAiAssistant",
+  },
+  {
+    id: "toggleReaderEdit",
+    scope: "window",
+    desc: "进入/退出编辑模式",
+    handlerKey: "toggleReaderEdit",
+  },
+  {
+    id: "editSelectedText",
+    scope: "window",
+    desc: "编辑选中文本",
+    handlerKey: "editSelectedText",
+  },
   {
     id: "openChapterRules",
     scope: "window",
@@ -108,10 +217,10 @@ export const SHORTCUT_ACTIONS: ShortcutActionDef[] = [
     handlerKey: "toggleSidebar",
   },
   {
-    id: "toggleFullscreen",
+    id: "toggleTheme",
     scope: "window",
-    desc: "进入/退出全屏阅读",
-    handlerKey: "toggleFullscreen",
+    desc: "切换主题色",
+    handlerKey: "toggleTheme",
   },
   { id: "openSettings", scope: "window", desc: "设置", handlerKey: "openSettings" },
   {
@@ -119,6 +228,36 @@ export const SHORTCUT_ACTIONS: ShortcutActionDef[] = [
     scope: "window",
     desc: "配色",
     handlerKey: "openColorScheme",
+  },
+  {
+    id: "openFindBook",
+    scope: "window",
+    desc: "找书/主界面",
+    handlerKey: "openFindBook",
+  },
+  {
+    id: "openBookSource",
+    scope: "window",
+    desc: "书源管理",
+    handlerKey: "openBookSource",
+  },
+  {
+    id: "enterStealthReader",
+    scope: "window",
+    desc: "进入/退出摸鱼模式",
+    handlerKey: "enterStealthReader",
+  },
+  {
+    id: "toggleMinimalistView",
+    scope: "window",
+    desc: "进入/退出极简视图",
+    handlerKey: "toggleMinimalistView",
+  },
+  {
+    id: "toggleFullscreen",
+    scope: "window",
+    desc: "进入/退出全屏阅读",
+    handlerKey: "toggleFullscreen",
   },
   {
     id: "openNewWindow",
@@ -129,10 +268,20 @@ export const SHORTCUT_ACTIONS: ShortcutActionDef[] = [
   {
     id: "toggleAllWindowsVisibility",
     scope: "global",
-    desc: "（全局）显示/隐藏阅读器",
+    desc: "显示/隐藏阅读器（全局）",
     handlerKey: "toggleAllWindowsVisibility",
   },
 ];
+
+export function shortcutActionsForPanel(
+  context: ShortcutPanelContext,
+): ShortcutActionDef[] {
+  const hidden =
+    context === "findBook"
+      ? FIND_BOOK_PANEL_HIDDEN_ACTION_IDS
+      : MAIN_PANEL_HIDDEN_ACTION_IDS;
+  return SHORTCUT_ACTIONS.filter((a) => !hidden.has(a.id));
+}
 
 export type ShortcutBindingMap = Record<ShortcutActionId, string>;
 
@@ -155,15 +304,31 @@ export function createDefaultShortcutBindings(isMac: boolean): ShortcutBindingMa
     increaseFontSize: `${accel}+=`,
     decreaseLineHeight: `${accel}+[`,
     increaseLineHeight: `${accel}+]`,
+    decreaseLetterSpacing: `${accel}+Shift+[`,
+    increaseLetterSpacing: `${accel}+Shift+]`,
+    decreaseParagraphSpacing: `${accel}+;`,
+    increaseParagraphSpacing: `${accel}+'`,
+    decreaseHorizontalInset: `${accel}+Shift+,`,
+    increaseHorizontalInset: `${accel}+Shift+.`,
     toggleFind: `${accel}+F`,
+    openSidebarSearch: `${accel}+Shift+F`,
+    openSidebarFiles: `${accel}+Shift+E`,
+    openSidebarChapters: `${accel}+Shift+C`,
+    openSidebarAiAssistant: `${accel}+Shift+A`,
+    toggleReaderEdit: `${accel}+/`,
+    editSelectedText: `${accel}+E`,
     openChapterRules: `${accel}+R`,
     toggleBookmark: `${accel}+D`,
     toggleSidebar: `${accel}+B`,
+    toggleMinimalistView: "F10",
     toggleFullscreen: "F11",
+    toggleTheme: "F2",
     openSettings: "F5",
     openColorScheme: "F6",
+    openFindBook: "F7",
+    openBookSource: "F8",
     openNewWindow: `${accel}+Shift+N`,
+    enterStealthReader: "F9",
     toggleAllWindowsVisibility: "Control+`",
   };
 }
-

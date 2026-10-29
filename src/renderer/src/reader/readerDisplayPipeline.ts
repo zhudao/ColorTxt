@@ -1,4 +1,9 @@
 import {
+  chapterTitleBlankCounts,
+  defaultChapterTitleBlankMode,
+  type ChapterTitleBlankMode,
+} from "../constants/appUi";
+import {
   applyLeadIndentFullWidth,
   detectChapterTitle,
   filterChaptersByMinCharCount,
@@ -11,7 +16,7 @@ import {
   stripMdInternalLinksFromPhysicalLines,
   type StripMdInternalLinksResult,
 } from "../markdown/markdownInternalLinks";
-import { lineContainsMdStripLink } from "../markdown/markdownLinkShared";
+import { lineContainsMdStripMarkup } from "../markdown/markdownLinkShared";
 import {
   createMdInternalLinkSidecar,
   type MdCompactLinkHit,
@@ -32,6 +37,11 @@ import { countCharsForLine } from "../utils/format";
 export type ReaderDisplayFormatOptions = {
   compressBlankLines: boolean;
   compressBlankKeepOneBlank: boolean;
+  /**
+   * 压缩空行时章节标题留白（`before1` / `before1After1` / `before2After1`）。
+   * 与「每行下方保留一个空行」独立：后者只作用于非标题正文行。
+   */
+  chapterTitleBlankMode: ChapterTitleBlankMode;
   leadIndentFullWidth: boolean;
   /** 与侧栏章节列表一致：不足最少字数的标题行不插入章节上下空行 */
   minCharCount?: number;
@@ -42,6 +52,15 @@ export type ReaderDisplayFormatOptions = {
    * 只读展示仍为去掉 `#` 的标题正文。
    */
   preserveMarkdownSourceLines?: boolean;
+  /**
+   * 编辑态写回磁盘：按物理行原文处理（保留 `<span id>` 等），
+   * 不走只读展示用的 span 剥离与 MD 侧车。
+   */
+  preservePhysicalSourceLines?: boolean;
+  /**
+   * 压缩空行时，首个合格章节标题前不插入预留空行（找书单章阅读等场景）。
+   */
+  skipBlanksBeforeFirstChapterTitle?: boolean;
 };
 
 export type ReaderDisplayFormatResult = {
@@ -61,6 +80,26 @@ function normalizeNewlines(text: string): string {
   return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 }
 
+function firstQualifiedChapterTitlePhysicalLine(
+  qualifiedChapterTitles: ReadonlySet<number>,
+): number | null {
+  let first = Infinity;
+  for (const physicalLine of qualifiedChapterTitles) {
+    if (physicalLine < first) first = physicalLine;
+  }
+  return first === Infinity ? null : first;
+}
+
+function shouldInsertBlanksBeforeChapterTitle(
+  physicalLine: number,
+  qualifiedChapterTitles: ReadonlySet<number>,
+  options: ReaderDisplayFormatOptions,
+): boolean {
+  if (!options.skipBlanksBeforeFirstChapterTitle) return true;
+  const first = firstQualifiedChapterTitlePhysicalLine(qualifiedChapterTitles);
+  return first == null || physicalLine !== first;
+}
+
 /** 剥离后为空且原文仅 span 锚点：不占阅读器展示行（跳转仍按物理行号解析） */
 function shouldOmitMdAnchorMetadataDisplayLine(
   mdStrip: StripMdInternalLinksResult | null | undefined,
@@ -72,6 +111,25 @@ function shouldOmitMdAnchorMetadataDisplayLine(
     isBlankPhysicalLineContent(strippedLine) &&
     isMdAnchorMetadataOnlyPhysicalLine(rawLine)
   );
+}
+
+/** 编辑态写回：保留物理行原文，不调用 {@link visibleReaderLineFromPhysicalRaw} */
+function lineContentForPhysicalWriteBack(
+  rawLine: string,
+  strippedLine: string,
+  mdStrip: StripMdInternalLinksResult | null | undefined,
+  preservePhysicalSource: boolean,
+): string {
+  if (preservePhysicalSource) return rawLine;
+  return mdStrip ? strippedLine : visibleReaderLineFromPhysicalRaw(rawLine);
+}
+
+function blankCheckLineForFormat(
+  rawLine: string,
+  strippedLine: string,
+  preservePhysicalSource: boolean,
+): string {
+  return preservePhysicalSource ? rawLine : strippedLine;
 }
 
 function isEbookFalseChapterTitleFromLeadingLink(
@@ -287,6 +345,7 @@ function attachPendingMdLinksToDisplayLine(
       hoverTip: occ.hoverTip,
       builtinLinkIcon: occ.builtinLinkIcon,
       externalUrl: occ.externalUrl,
+      inlineImage: occ.inlineImage,
     });
   }
   sidecar.hitsByDisplayLine.set(displayLine, hits);
@@ -302,12 +361,15 @@ export function formatPhysicalLinesForReader(
   preStrip?: StripMdInternalLinksResult,
 ): ReaderDisplayFormatResult {
   const minCharCount = options.minCharCount ?? 0;
+  /** 编辑态写回：按物理行原文压缩/缩进，不走只读 MD 侧车剥离（避免 `<span id>` 等被删） */
+  const preservePhysicalSource = options.preservePhysicalSourceLines === true;
   const hasMdLinks =
     options.isMarkdown &&
+    !preservePhysicalSource &&
     (preStrip != null ||
       physicalLines.some(
         (line) =>
-          lineContainsMdStripLink(line) || /<span\s+id=/i.test(line),
+          lineContainsMdStripMarkup(line) || /<span\s+id=/i.test(line),
       ));
   const mdStrip =
     preStrip ??
@@ -350,13 +412,17 @@ export function formatPhysicalLinesForReader(
       physicalLine += 1;
       const strippedLine = contentLines[physicalLine - 1] ?? rawLine;
       if (
+        !preservePhysicalSource &&
         shouldOmitMdAnchorMetadataDisplayLine(mdStrip, rawLine, strippedLine)
       ) {
         continue;
       }
-      const visibleLine = mdStrip
-        ? strippedLine
-        : visibleReaderLineFromPhysicalRaw(rawLine);
+      const visibleLine = lineContentForPhysicalWriteBack(
+        rawLine,
+        strippedLine,
+        mdStrip,
+        preservePhysicalSource,
+      );
       const { shown } = resolvePhysicalLineDisplay(
         visibleLine,
         physicalLine,
@@ -395,7 +461,11 @@ export function formatPhysicalLinesForReader(
   }
 
   const keepOneBlank = options.compressBlankKeepOneBlank;
-  const blanksAbove = keepOneBlank ? 1 : 2;
+  const titleBlanks = chapterTitleBlankCounts(
+    options.chapterTitleBlankMode ?? defaultChapterTitleBlankMode,
+  );
+  const blanksAbove = titleBlanks.before;
+  const blanksBelow = titleBlanks.after;
   const out: string[] = [];
   const displayLineToPhysicalLine: number[] = [];
 
@@ -433,14 +503,24 @@ export function formatPhysicalLinesForReader(
     physicalLine += 1;
     const strippedLine = contentLines[physicalLine - 1] ?? rawLine;
     if (
+      !preservePhysicalSource &&
       shouldOmitMdAnchorMetadataDisplayLine(mdStrip, rawLine, strippedLine)
     ) {
       continue;
     }
-    if (isBlankPhysicalLineContent(strippedLine)) continue;
-    const visibleLine = mdStrip
-      ? strippedLine
-      : visibleReaderLineFromPhysicalRaw(rawLine);
+    if (
+      isBlankPhysicalLineContent(
+        blankCheckLineForFormat(rawLine, strippedLine, preservePhysicalSource),
+      )
+    ) {
+      continue;
+    }
+    const visibleLine = lineContentForPhysicalWriteBack(
+      rawLine,
+      strippedLine,
+      mdStrip,
+      preservePhysicalSource,
+    );
     const { shown } = resolvePhysicalLineDisplay(
       visibleLine,
       physicalLine,
@@ -453,12 +533,22 @@ export function formatPhysicalLinesForReader(
     const isQualifiedChapterTitle = qualifiedChapterTitles.has(physicalLine);
     const hasVisibleTitle = shown.trim().length > 0;
     if (isQualifiedChapterTitle && hasVisibleTitle) {
-      for (let i = 0; i < blanksAbove; i += 1) {
-        pushDisplay("", physicalLine);
+      if (
+        shouldInsertBlanksBeforeChapterTitle(
+          physicalLine,
+          qualifiedChapterTitles,
+          options,
+        )
+      ) {
+        for (let i = 0; i < blanksAbove; i += 1) {
+          pushDisplay("", physicalLine);
+        }
       }
       const titleDisplayLine = pushDisplay(shown, physicalLine, linkContext);
       chapterTitleDisplayLineByPhysical.set(physicalLine, titleDisplayLine);
-      pushDisplay("", physicalLine);
+      for (let i = 0; i < blanksBelow; i += 1) {
+        pushDisplay("", physicalLine);
+      }
     } else {
       pushDisplay(shown, physicalLine, linkContext);
       if (keepOneBlank) pushDisplay("", physicalLine);
@@ -494,12 +584,15 @@ export async function formatPhysicalLinesForReaderAsync(
     return formatPhysicalLinesForReader(physicalLines, options, preStrip);
   }
   const minCharCount = options.minCharCount ?? 0;
+  /** 编辑态写回：按物理行原文压缩/缩进，不走只读 MD 侧车剥离（避免 `<span id>` 等被删） */
+  const preservePhysicalSource = options.preservePhysicalSourceLines === true;
   const hasMdLinks =
     options.isMarkdown &&
+    !preservePhysicalSource &&
     (preStrip != null ||
       physicalLines.some(
         (line) =>
-          lineContainsMdStripLink(line) || /<span\s+id=/i.test(line),
+          lineContainsMdStripMarkup(line) || /<span\s+id=/i.test(line),
       ));
   const mdStrip =
     preStrip ??
@@ -546,13 +639,17 @@ export async function formatPhysicalLinesForReaderAsync(
       const rawLine = physicalLines[i] ?? "";
       const strippedLine = contentLines[physicalLine - 1] ?? rawLine;
       if (
+        !preservePhysicalSource &&
         shouldOmitMdAnchorMetadataDisplayLine(mdStrip, rawLine, strippedLine)
       ) {
         continue;
       }
-      const visibleLine = mdStrip
-        ? strippedLine
-        : visibleReaderLineFromPhysicalRaw(rawLine);
+      const visibleLine = lineContentForPhysicalWriteBack(
+        rawLine,
+        strippedLine,
+        mdStrip,
+        preservePhysicalSource,
+      );
       const { shown } = resolvePhysicalLineDisplay(
         visibleLine,
         physicalLine,
@@ -591,7 +688,11 @@ export async function formatPhysicalLinesForReaderAsync(
   }
 
   const keepOneBlank = options.compressBlankKeepOneBlank;
-  const blanksAbove = keepOneBlank ? 1 : 2;
+  const titleBlanks = chapterTitleBlankCounts(
+    options.chapterTitleBlankMode ?? defaultChapterTitleBlankMode,
+  );
+  const blanksAbove = titleBlanks.before;
+  const blanksBelow = titleBlanks.after;
   const out: string[] = [];
   const displayLineToPhysicalLine: number[] = [];
 
@@ -634,14 +735,24 @@ export async function formatPhysicalLinesForReaderAsync(
     physicalLine += 1;
     const strippedLine = contentLines[physicalLine - 1] ?? rawLine;
     if (
+      !preservePhysicalSource &&
       shouldOmitMdAnchorMetadataDisplayLine(mdStrip, rawLine, strippedLine)
     ) {
       continue;
     }
-    if (isBlankPhysicalLineContent(strippedLine)) continue;
-    const visibleLine = mdStrip
-      ? strippedLine
-      : visibleReaderLineFromPhysicalRaw(rawLine);
+    if (
+      isBlankPhysicalLineContent(
+        blankCheckLineForFormat(rawLine, strippedLine, preservePhysicalSource),
+      )
+    ) {
+      continue;
+    }
+    const visibleLine = lineContentForPhysicalWriteBack(
+      rawLine,
+      strippedLine,
+      mdStrip,
+      preservePhysicalSource,
+    );
     const { shown } = resolvePhysicalLineDisplay(
       visibleLine,
       physicalLine,
@@ -654,12 +765,22 @@ export async function formatPhysicalLinesForReaderAsync(
     const isQualifiedChapterTitle = qualifiedChapterTitles.has(physicalLine);
     const hasVisibleTitle = shown.trim().length > 0;
     if (isQualifiedChapterTitle && hasVisibleTitle) {
-      for (let j = 0; j < blanksAbove; j += 1) {
-        pushDisplay("", physicalLine);
+      if (
+        shouldInsertBlanksBeforeChapterTitle(
+          physicalLine,
+          qualifiedChapterTitles,
+          options,
+        )
+      ) {
+        for (let j = 0; j < blanksAbove; j += 1) {
+          pushDisplay("", physicalLine);
+        }
       }
       const titleDisplayLine = pushDisplay(shown, physicalLine, linkContext);
       chapterTitleDisplayLineByPhysical.set(physicalLine, titleDisplayLine);
-      pushDisplay("", physicalLine);
+      for (let j = 0; j < blanksBelow; j += 1) {
+        pushDisplay("", physicalLine);
+      }
     } else {
       pushDisplay(shown, physicalLine, linkContext);
       if (keepOneBlank) pushDisplay("", physicalLine);

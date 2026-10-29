@@ -9,6 +9,19 @@ import {
   useTemplateRef,
 } from "vue";
 import { icons } from "../icons";
+import { syncDismissibleOverlay } from "../utils/dismissibleOverlayStack";
+
+export type CustomSelectItemTagTone =
+  | "language"
+  | "dialect"
+  | "scene"
+  | "capability"
+  | "note";
+
+export type CustomSelectItemTag = {
+  label: string;
+  tone: CustomSelectItemTagTone;
+};
 
 export type CustomSelectItem =
   | {
@@ -29,6 +42,8 @@ export type CustomSelectItem =
       labelSuffix?: string;
       /** 主标签下方的第二行说明（如引擎简介） */
       description?: string;
+      /** 说明下方的彩色标签（语种 / 方言 / 场景等） */
+      tags?: readonly CustomSelectItemTag[];
       /** 追加到 `appShellMenuItemPrefix` 容器上的 class（如旋转动画） */
       prefixWrapperClass?: string;
       /** 追加到菜单按钮上的 class（如 `appShellMenuItem--success`） */
@@ -65,17 +80,28 @@ const props = withDefaults(
     ariaLabel: string;
     /** 中间区域最大高度（px） */
     scrollMaxHeight?: number;
-    /** 下拉最小宽度（px），默认与触发器同宽 */
+    /** 在滚动区顶部显示本地下拉过滤输入框 */
+    searchable?: boolean;
+    searchPlaceholder?: string;
+    /**
+     * 下拉面板宽度（px）。
+     * `> 0` 时按该值；`0`（默认）时取触发器宽度，且不少于 140。
+     */
     minPanelWidth?: number;
+    /** 下拉 Teleport 面板 z-index；嵌套在其它浮层内时需高于父面板 */
+    panelZIndex?: number;
     /** 为 true 时用左侧 3px 色块表示分类色（排序项带 prefixHtml 时不显示色块） */
     categoryColorMarks?: boolean;
   }>(),
   {
     scrollMaxHeight: 220,
     minPanelWidth: 0,
+    panelZIndex: 7200,
     triggerPrefixHtml: "",
     categoryColorMarks: false,
     placeholder: "",
+    searchable: false,
+    searchPlaceholder: "搜索",
   },
 );
 
@@ -88,9 +114,12 @@ const emit = defineEmits<{
 }>();
 
 const open = ref(false);
+syncDismissibleOverlay(open);
 const triggerRef = useTemplateRef<HTMLButtonElement>("triggerRef");
 const panelRef = useTemplateRef<HTMLElement>("panelRef");
 const scrollAreaRef = useTemplateRef<HTMLElement>("scrollAreaRef");
+const searchInputRef = useTemplateRef<HTMLInputElement>("searchInputRef");
+const searchQuery = ref("");
 /** 仅在实际出现纵向滚动条时加右侧内边距 */
 const scrollAreaHasScrollbar = ref(false);
 let scrollAreaResizeObserver: ResizeObserver | null = null;
@@ -159,10 +188,11 @@ async function positionPanel() {
   const trig = triggerRef.value;
   if (!trig) return;
   const r = trig.getBoundingClientRect();
-  panelWidth.value = Math.max(
-    props.minPanelWidth > 0 ? props.minPanelWidth : r.width,
-    140,
-  );
+  // 显式 minPanelWidth 优先生效；未指定时跟触发器，并用 140 作下限（原 CSS min-width）
+  panelWidth.value =
+    props.minPanelWidth > 0
+      ? props.minPanelWidth
+      : Math.max(r.width, 140);
   posLeft.value = r.left;
   posTop.value = r.bottom + 4;
   await nextTick();
@@ -173,6 +203,23 @@ async function positionPanel() {
   });
 }
 
+function scrollSelectedIntoView() {
+  const area = scrollAreaRef.value;
+  const id = props.modelValue;
+  if (!area || !id) return;
+  const escaped =
+    typeof CSS !== "undefined" && typeof CSS.escape === "function"
+      ? CSS.escape(id)
+      : id.replace(/["\\]/g, "\\$&");
+  const el = area.querySelector<HTMLElement>(`[data-select-id="${escaped}"]`);
+  if (!el) return;
+  const areaRect = area.getBoundingClientRect();
+  const elRect = el.getBoundingClientRect();
+  const delta =
+    elRect.top - areaRect.top - (area.clientHeight - el.offsetHeight) / 2;
+  area.scrollTop += delta;
+}
+
 function toggle() {
   open.value = !open.value;
   if (open.value) void positionPanel();
@@ -181,6 +228,55 @@ function toggle() {
 function close() {
   open.value = false;
 }
+
+function searchItemMatches(
+  item: Extract<CustomSelectItem, { kind: "item" }>,
+  query: string,
+): boolean {
+  if (
+    [item.label, item.id, item.description, item.labelSuffix].some((value) =>
+      value?.toLocaleLowerCase().includes(query),
+    )
+  ) {
+    return true;
+  }
+  return (
+    item.tags?.some((tag) => tag.label.toLocaleLowerCase().includes(query)) ===
+    true
+  );
+}
+
+function itemHasDetail(it: Extract<CustomSelectItem, { kind: "item" }>): boolean {
+  return Boolean(it.description?.trim() || it.tags?.length);
+}
+
+const filteredScrollItems = computed((): readonly CustomSelectItem[] => {
+  const query = searchQuery.value.trim().toLocaleLowerCase();
+  if (!props.searchable || !query) return props.scrollItems;
+
+  const filtered: CustomSelectItem[] = [];
+  let currentGroup: Extract<CustomSelectItem, { kind: "groupLabel" }> | null =
+    null;
+  let currentGroupMatches = false;
+  let currentGroupEmitted = false;
+
+  for (const raw of props.scrollItems) {
+    if (raw.kind === "groupLabel") {
+      currentGroup = raw;
+      currentGroupMatches = raw.label.toLocaleLowerCase().includes(query);
+      currentGroupEmitted = false;
+      continue;
+    }
+    if (raw.kind !== "item") continue;
+    if (!currentGroupMatches && !searchItemMatches(raw, query)) continue;
+    if (currentGroup && !currentGroupEmitted) {
+      filtered.push(currentGroup);
+      currentGroupEmitted = true;
+    }
+    filtered.push(raw);
+  }
+  return filtered;
+});
 
 function selectItem(it: Extract<CustomSelectItem, { kind: "item" }>) {
   if (it.actionOnly) {
@@ -204,6 +300,7 @@ function onKey(ev: KeyboardEvent) {
   if (!open.value) return;
   if (ev.key === "Escape") {
     ev.preventDefault();
+    ev.stopPropagation();
     close();
   }
 }
@@ -216,12 +313,19 @@ watch(
       await nextTick();
       await positionPanel();
       await nextTick();
+      searchInputRef.value?.focus();
       updateScrollAreaScrollbarFlag();
       bindScrollAreaResizeObserver();
       requestAnimationFrame(() => {
         updateScrollAreaScrollbarFlag();
+        scrollSelectedIntoView();
+        requestAnimationFrame(() => {
+          scrollSelectedIntoView();
+          applyPanelPosition();
+        });
       });
     } else {
+      searchQuery.value = "";
       unbindScrollAreaResizeObserver();
       scrollAreaHasScrollbar.value = false;
     }
@@ -230,11 +334,12 @@ watch(
 );
 
 watch(
-  () => [props.scrollItems.length, props.scrollMaxHeight] as const,
+  () => [filteredScrollItems.value.length, props.scrollMaxHeight] as const,
   async () => {
     if (!open.value) return;
     await nextTick();
     updateScrollAreaScrollbarFlag();
+    applyPanelPosition();
   },
 );
 
@@ -250,13 +355,13 @@ watch(
 );
 
 onMounted(() => {
-  document.addEventListener("pointerdown", onDocPointerDown);
+  document.addEventListener("pointerdown", onDocPointerDown, true);
   document.addEventListener("keydown", onKey, true);
   window.addEventListener("resize", close);
 });
 onBeforeUnmount(() => {
   unbindScrollAreaResizeObserver();
-  document.removeEventListener("pointerdown", onDocPointerDown);
+  document.removeEventListener("pointerdown", onDocPointerDown, true);
   document.removeEventListener("keydown", onKey, true);
   window.removeEventListener("resize", close);
 });
@@ -271,7 +376,7 @@ function itemButtonClass(it: Extract<CustomSelectItem, { kind: "item" }>) {
   if (it.danger) c.push("appShellMenuItem--danger");
   if (it.itemClass?.trim()) c.push(it.itemClass.trim());
   if (!it.actionOnly && it.id === props.modelValue) c.push("is-active");
-  if (it.description?.trim()) c.push("appShellMenuItem--stacked");
+  if (itemHasDetail(it)) c.push("appShellMenuItem--stacked");
   return c.join(" ");
 }
 
@@ -355,9 +460,26 @@ const triggerMainText = computed(() => {
           left: `${posLeft}px`,
           top: `${posTop}px`,
           width: `${panelWidth}px`,
+          zIndex: panelZIndex,
         }"
         @click.stop
       >
+        <label v-if="searchable" class="customSelectSearch">
+          <span
+            class="customSelectSearchIcon"
+            aria-hidden="true"
+            v-html="icons.find"
+          />
+          <input
+            ref="searchInputRef"
+            v-model="searchQuery"
+            type="search"
+            :placeholder="searchPlaceholder"
+            :aria-label="searchPlaceholder"
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </label>
         <div class="customSelectSection">
           <template v-for="(raw, idx) in fixedTopItems" :key="'t' + idx">
             <div v-if="raw.kind === 'divider'" class="appShellMenuDivider" />
@@ -372,6 +494,7 @@ const triggerMainText = computed(() => {
               v-else-if="raw.kind === 'item'"
               type="button"
               role="option"
+              :data-select-id="raw.actionOnly ? undefined : raw.id"
               :aria-selected="!raw.actionOnly && raw.id === modelValue"
               :class="itemButtonClass(raw)"
               :disabled="raw.disabled"
@@ -395,8 +518,7 @@ const triggerMainText = computed(() => {
                   <span
                     class="appShellMenuItemLabelBlock"
                     :class="{
-                      'appShellMenuItemLabelBlock--stacked':
-                        raw.description?.trim(),
+                      'appShellMenuItemLabelBlock--stacked': itemHasDetail(raw),
                     }"
                   >
                     <span class="appShellMenuItemLabelText">{{ raw.label }}</span>
@@ -405,6 +527,18 @@ const triggerMainText = computed(() => {
                       class="appShellMenuItemDescription"
                       >{{ raw.description }}</span
                     >
+                    <span
+                      v-if="raw.tags?.length"
+                      class="appShellMenuItemTags"
+                    >
+                      <span
+                        v-for="tag in raw.tags"
+                        :key="`${tag.tone}-${tag.label}`"
+                        class="appShellMenuItemTag"
+                        :data-tone="tag.tone"
+                        >{{ tag.label }}</span
+                      >
+                    </span>
                   </span>
                   <span
                     v-if="raw.labelSuffix?.trim()"
@@ -424,7 +558,10 @@ const triggerMainText = computed(() => {
           }"
           :style="{ maxHeight: `${scrollMaxHeight}px` }"
         >
-          <template v-for="(raw, idx) in scrollItems" :key="'s' + idx">
+          <template
+            v-for="(raw, idx) in filteredScrollItems"
+            :key="'s' + idx"
+          >
             <div v-if="raw.kind === 'divider'" class="appShellMenuDivider" />
             <div
               v-else-if="raw.kind === 'groupLabel'"
@@ -437,6 +574,7 @@ const triggerMainText = computed(() => {
               v-else-if="raw.kind === 'item'"
               type="button"
               role="option"
+              :data-select-id="raw.actionOnly ? undefined : raw.id"
               :aria-selected="!raw.actionOnly && raw.id === modelValue"
               :class="itemButtonClass(raw)"
               :disabled="raw.disabled"
@@ -460,8 +598,7 @@ const triggerMainText = computed(() => {
                   <span
                     class="appShellMenuItemLabelBlock"
                     :class="{
-                      'appShellMenuItemLabelBlock--stacked':
-                        raw.description?.trim(),
+                      'appShellMenuItemLabelBlock--stacked': itemHasDetail(raw),
                     }"
                   >
                     <span class="appShellMenuItemLabelText">{{ raw.label }}</span>
@@ -470,6 +607,18 @@ const triggerMainText = computed(() => {
                       class="appShellMenuItemDescription"
                       >{{ raw.description }}</span
                     >
+                    <span
+                      v-if="raw.tags?.length"
+                      class="appShellMenuItemTags"
+                    >
+                      <span
+                        v-for="tag in raw.tags"
+                        :key="`${tag.tone}-${tag.label}`"
+                        class="appShellMenuItemTag"
+                        :data-tone="tag.tone"
+                        >{{ tag.label }}</span
+                      >
+                    </span>
                   </span>
                   <span
                     v-if="raw.labelSuffix?.trim()"
@@ -480,6 +629,12 @@ const triggerMainText = computed(() => {
               </span>
             </button>
           </template>
+          <div
+            v-if="searchable && filteredScrollItems.length === 0"
+            class="customSelectEmpty"
+          >
+            无匹配项
+          </div>
         </div>
         <div class="customSelectSection">
           <template v-for="(raw, idx) in fixedBottomItems" :key="'b' + idx">
@@ -495,6 +650,7 @@ const triggerMainText = computed(() => {
               v-else-if="raw.kind === 'item'"
               type="button"
               role="option"
+              :data-select-id="raw.actionOnly ? undefined : raw.id"
               :aria-selected="!raw.actionOnly && raw.id === modelValue"
               :class="itemButtonClass(raw)"
               :disabled="raw.disabled"
@@ -518,8 +674,7 @@ const triggerMainText = computed(() => {
                   <span
                     class="appShellMenuItemLabelBlock"
                     :class="{
-                      'appShellMenuItemLabelBlock--stacked':
-                        raw.description?.trim(),
+                      'appShellMenuItemLabelBlock--stacked': itemHasDetail(raw),
                     }"
                   >
                     <span class="appShellMenuItemLabelText">{{ raw.label }}</span>
@@ -528,6 +683,18 @@ const triggerMainText = computed(() => {
                       class="appShellMenuItemDescription"
                       >{{ raw.description }}</span
                     >
+                    <span
+                      v-if="raw.tags?.length"
+                      class="appShellMenuItemTags"
+                    >
+                      <span
+                        v-for="tag in raw.tags"
+                        :key="`${tag.tone}-${tag.label}`"
+                        class="appShellMenuItemTag"
+                        :data-tone="tag.tone"
+                        >{{ tag.label }}</span
+                      >
+                    </span>
                   </span>
                   <span
                     v-if="raw.labelSuffix?.trim()"
@@ -548,11 +715,14 @@ const triggerMainText = computed(() => {
 .customSelect {
   position: relative;
   min-width: 0;
-  flex: 1;
+  width: 100%;
+  box-sizing: border-box;
 }
 .customSelectTrigger.btn {
   flex-shrink: 1;
   min-width: 0;
+  width: 100%;
+  max-width: 100%;
 }
 .customSelectTrigger {
   box-sizing: border-box;
@@ -643,7 +813,58 @@ const triggerMainText = computed(() => {
   position: fixed;
   z-index: 7200;
   box-sizing: border-box;
-  min-width: 140px;
+  /* 宽度由 positionPanel 写入的 inline width 决定，勿再写死 min-width */
+}
+.customSelectSearch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  padding: 0 7px;
+  min-width: 0;
+  height: 30px;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+}
+.customSelectSearch:focus-within {
+  border-color: var(--accent);
+}
+.customSelectSearchIcon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+}
+.customSelectSearchIcon :deep(svg) {
+  width: 14px;
+  height: 14px;
+}
+.customSelectSearchIcon :deep(path) {
+  fill: currentColor;
+}
+.customSelectSearch input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  color: var(--fg);
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+}
+.customSelectSearch input::placeholder {
+  color: var(--muted);
+}
+.customSelectEmpty {
+  padding: 10px 12px;
+  color: var(--muted);
+  text-align: center;
+  font-size: 13px;
 }
 /* 与字体列表 / 历史会话一致：相邻项间距 4px（全局 .appShellMenuItem 为 1px），行高统一 */
 .customSelectPanel :deep(.appShellMenuItem + .appShellMenuItem) {
@@ -654,8 +875,9 @@ const triggerMainText = computed(() => {
   box-sizing: border-box;
   line-height: 1.2;
 }
-.customSelectPanel :deep(.appShellMenuItemRowBody) {
-  align-items: flex-start;
+.customSelectPanel
+  :deep(.appShellMenuItemRowBody:has(.appShellMenuItemPrefix) .appShellMenuItemLabelWithCount) {
+  margin-top: 0;
 }
 .customSelectPanel :deep(.appShellMenuItemLabelText) {
   white-space: normal;

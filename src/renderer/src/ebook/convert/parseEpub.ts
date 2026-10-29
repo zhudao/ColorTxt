@@ -22,14 +22,18 @@ import {
   shouldTreatImgAsLinkIcon,
 } from "./ebookLinkIconHeuristics";
 import { extractEpubEmbeddedTocEntries } from "./ebookEpubNav";
-import { injectEpubTocAnchorsIntoLines } from "./ebookTocAnchorInjection";
+import { collectEpubTocAnchorMutations } from "./ebookTocAnchorInjection";
 import {
   compactFootnoteLinkFragment,
   footnoteRefLogicalTargetFromBody,
   isFootnoteBodyLogicalTarget,
   isFootnoteRefRawElementId,
 } from "./ebookFootnoteLinkFragments";
-import { type EpubSpineSectionRange } from "./ebookSpineLineMatch";
+import {
+  applyLineMutations,
+  shiftSpineSectionRangesForMutations,
+  type EpubSpineSectionRange,
+} from "./ebookSpineLineMatch";
 import { yieldToUi } from "../yieldToUi";
 
 function parseXml(doc: Document, selector: string, attr: string): string | null {
@@ -308,6 +312,20 @@ async function appendImageLineFromHref(
   if (rel) out.push(formatMdBlockImage(rel));
 }
 
+async function appendInlineImageToAcc(
+  acc: { text: string },
+  imgEl: Element,
+  ctx: EpubImageContext,
+  htmlDirInZip: string,
+): Promise<void> {
+  const href = getImgHref(imgEl);
+  if (!href) return;
+  const rel = await exportImageRelFromHref(ctx.zip, htmlDirInZip, href, ctx);
+  if (!rel) return;
+  const alt = imgEl.getAttribute("alt")?.trim() ?? "";
+  acc.text += formatMdBlockImage(rel, alt);
+}
+
 function resolveInternalLinkTargetForLinkIcon(
   imgEl: Element,
   htmlDirInZip: string,
@@ -353,16 +371,12 @@ async function appendInlineLinkIconToAcc(
   if (iconRel && !ctx.footnoteIconRel) {
     ctx.footnoteIconRel = iconRel;
   }
-  const slash = hoverTip.indexOf("/");
-  const title = slash >= 0 ? hoverTip.slice(0, slash) : hoverTip;
-  const alt = slash >= 0 ? hoverTip.slice(slash + 1) : undefined;
   const anchorKey = anchorKeyOf(anchorEl);
   appendAnchorIdMarkBeforeIfNeeded(acc, ctx, anchorKey, targetId);
   appendMdLinkToAcc(acc, ctx, targetId, {
     label,
     iconRel,
-    title,
-    alt,
+    title: hoverTip,
   });
   appendNoterefBackAnchorAfterLinkIfNeeded(acc, ctx, anchorEl, targetId);
 }
@@ -596,6 +610,8 @@ const BLOCK_INNER =
 
 function hasBlockStructureInside(el: Element): boolean {
   if (el.querySelector(BLOCK_INNER) !== null) return true;
+  /** `<br>` 是软换行，textContent 不含换行；合成一行会把 Foliate 里的分行全部粘掉 */
+  if (el.querySelector("br, hr") !== null) return true;
   /** 仅含插图、无 p/h* 的容器若走「合成一行」分支会漏掉 img（textContent 为空） */
   if (el.querySelector("img, image") !== null) return true;
   /**
@@ -630,6 +646,7 @@ async function walkInlineNodes(
   htmlDirInZip: string,
   currentDocZipPath: string,
   ctx: EpubImageContext,
+  onBreak: () => void,
 ): Promise<void> {
   for (const node of parent.childNodes) {
     if (node.nodeType === Node.TEXT_NODE) {
@@ -640,7 +657,29 @@ async function walkInlineNodes(
     const el = node as Element;
     const tag = el.tagName.toLowerCase();
     if (tag === "br" || tag === "hr") {
-      acc.text += " ";
+      onBreak();
+      continue;
+    }
+    if (tag === "img" || tag === "image") {
+      if (shouldTreatImgAsLinkIcon({ imgEl: el })) {
+        const link = resolveInternalLinkTargetForLinkIcon(
+          el,
+          htmlDirInZip,
+          ctx,
+        );
+        if (link) {
+          await appendInlineLinkIconToAcc(
+            acc,
+            el,
+            link.anchor,
+            link.targetId,
+            ctx,
+            htmlDirInZip,
+          );
+          continue;
+        }
+      }
+      await appendInlineImageToAcc(acc, el, ctx, htmlDirInZip);
       continue;
     }
     /** 注音/括注：不并入正文，避免「第一折」旁多出拼音或半角括号 */
@@ -669,7 +708,6 @@ async function walkInlineNodes(
         if (tid) {
           appendAnchorIdMarkBeforeIfNeeded(acc, ctx, anchorKey, tid);
           const hover = resolveLinkIconHoverTip(el, el);
-          const slash = hover.indexOf("/");
           appendMdLinkToAcc(acc, ctx, tid, {
             label,
             iconRel:
@@ -679,8 +717,7 @@ async function walkInlineNodes(
               (isInsideNoterefContext(el) || epubTypeHas(el, "noteref"))
                 ? ctx.footnoteIconRel
                 : undefined,
-            title: slash >= 0 ? hover.slice(0, slash) : hover,
-            alt: slash >= 0 ? hover.slice(slash + 1) : undefined,
+            title: hover,
           });
           appendNoterefBackAnchorAfterLinkIfNeeded(acc, ctx, el, tid);
         } else if (label) {
@@ -696,7 +733,14 @@ async function walkInlineNodes(
     const epubType =
       el.getAttribute("epub:type") || el.getAttributeNS(epubNs, "type");
     if (epubType === "noteref") {
-      await walkInlineNodes(el, acc, htmlDirInZip, currentDocZipPath, ctx);
+      await walkInlineNodes(
+        el,
+        acc,
+        htmlDirInZip,
+        currentDocZipPath,
+        ctx,
+        onBreak,
+      );
       continue;
     }
     if (
@@ -730,7 +774,14 @@ async function walkInlineNodes(
       tag === "data" ||
       tag === "time"
     ) {
-      await walkInlineNodes(el, acc, htmlDirInZip, currentDocZipPath, ctx);
+      await walkInlineNodes(
+        el,
+        acc,
+        htmlDirInZip,
+        currentDocZipPath,
+        ctx,
+        onBreak,
+      );
     }
   }
 }
@@ -783,21 +834,11 @@ async function paragraphToLines(
           return;
         }
       }
-      flushTextLines();
-      const href = getImgHref(el);
-      if (href) {
-        await appendImageLineFromHref(
-          ctx.zip,
-          htmlDirInZip,
-          href,
-          ctx,
-          out,
-        );
-      }
+      await appendInlineImageToAcc(acc, el, ctx, htmlDirInZip);
       return;
     }
     if (tag === "br" || tag === "hr") {
-      acc.text += " ";
+      flushTextLines();
       return;
     }
     if (tag === "a") {
@@ -822,7 +863,6 @@ async function paragraphToLines(
         if (tid) {
           appendAnchorIdMarkBeforeIfNeeded(acc, ctx, anchorKey, tid);
           const hover = resolveLinkIconHoverTip(el, el);
-          const slash = hover.indexOf("/");
           appendMdLinkToAcc(acc, ctx, tid, {
             label,
             iconRel:
@@ -832,8 +872,7 @@ async function paragraphToLines(
               (isInsideNoterefContext(el) || epubTypeHas(el, "noteref"))
                 ? ctx.footnoteIconRel
                 : undefined,
-            title: slash >= 0 ? hover.slice(0, slash) : hover,
-            alt: slash >= 0 ? hover.slice(slash + 1) : undefined,
+            title: hover,
           });
           appendNoterefBackAnchorAfterLinkIfNeeded(acc, ctx, el, tid);
         } else if (label) {
@@ -849,12 +888,26 @@ async function paragraphToLines(
     const epubType =
       el.getAttribute("epub:type") || el.getAttributeNS(epubNs, "type");
     if (epubType === "noteref") {
-      await walkInlineNodes(el, acc, htmlDirInZip, currentDocZipPath, ctx);
+      await walkInlineNodes(
+        el,
+        acc,
+        htmlDirInZip,
+        currentDocZipPath,
+        ctx,
+        flushTextLines,
+      );
       return;
     }
     const nestedImg = el.querySelector("img, image");
     if (!nestedImg) {
-      await walkInlineNodes(el, acc, htmlDirInZip, currentDocZipPath, ctx);
+      await walkInlineNodes(
+        el,
+        acc,
+        htmlDirInZip,
+        currentDocZipPath,
+        ctx,
+        flushTextLines,
+      );
       return;
     }
     for (const c of el.childNodes) {
@@ -1008,6 +1061,10 @@ async function emitFlowBlock(
     return;
   }
 
+  if (tag === "br" || tag === "hr") {
+    return;
+  }
+
   if (isFootnoteContainer(el)) {
     await emitFootnoteBlock(el, out, ctx, htmlDirInZip, currentDocZipPath);
     return;
@@ -1083,6 +1140,14 @@ async function emitFlowBlock(
       let t = normalizeSpace(el.textContent ?? "");
       if (wrapId) t = t ? wrapId + t : wrapId;
       if (t) out.push(t);
+      return;
+    }
+    /**
+     * 无 p、标题、figure 等流式块、但含 img/a/br 时按段落走：
+     * 否则 emitFlowChildNodes 会把行内字形图拆成独占行。
+     */
+    if (el.querySelector(BLOCK_INNER) === null) {
+      await paragraphToLines(el, out, ctx, htmlDirInZip, currentDocZipPath);
       return;
     }
     if (wrapId) out.push(wrapId);
@@ -1326,12 +1391,16 @@ export async function convertLoadedEpubZip(
     zipPathToLinkStem: imageCtx.zipPathToLinkStem,
     findZipFile,
   });
-  injectEpubTocAnchorsIntoLines(
+  const tocMutations = collectEpubTocAnchorMutations(
     lines,
     spineSectionRanges,
     tocEntries,
     fragments,
   );
+  if (tocMutations.length > 0) {
+    applyLineMutations(lines, tocMutations);
+  }
+  shiftSpineSectionRangesForMutations(spineSectionRanges, tocMutations);
   injectStemOnlyMdLinkAnchors(lines, spineSectionRanges, fragments);
 
   const utf8 = lines.join("\n").replace(/\n{3,}/g, "\n\n").trim() + "\n";

@@ -151,14 +151,14 @@ export function queueTocHeadingMutations(
   );
 }
 
-/** 按目录项在对应 spine 节内注入 ATX 标题行（阅读器侧栏章节由 ATX 解析，不另写目录块）。 */
-export function injectEpubTocAnchorsIntoLines(
-  lines: string[],
+/** 收集嵌入目录 ATX / toc span 变更（由调用方 apply，并在 apply 前校准 spine 节行号） */
+export function collectEpubTocAnchorMutations(
+  lines: readonly string[],
   sectionRanges: readonly EpubSpineSectionRange[],
   tocEntries: readonly EmbeddedTocEntry[],
   registry: EbookMarkdownFragmentRegistry,
-): void {
-  if (tocEntries.length === 0 || sectionRanges.length === 0) return;
+): LineMutation[] {
+  if (tocEntries.length === 0 || sectionRanges.length === 0) return [];
 
   const sectionByStem = sectionRangeByStem(sectionRanges);
   const tocCounterByStem = new Map<string, number>();
@@ -199,7 +199,6 @@ export function injectEpubTocAnchorsIntoLines(
         title: entry.title,
         level: entry.level,
       });
-      /** 变更在批次末统一应用；游标按「未变更」行号 +1，勿 +2 跳过紧邻子标题 */
       searchStartByStem.set(stem, lineIdx + 1);
     } else {
       queueTocHeadingMutations(mutations, lines, {
@@ -213,6 +212,22 @@ export function injectEpubTocAnchorsIntoLines(
     }
   }
 
+  return mutations;
+}
+
+/** 按目录项在对应 spine 节内注入 ATX 标题行（阅读器侧栏章节由 ATX 解析，不另写目录块）。 */
+export function injectEpubTocAnchorsIntoLines(
+  lines: string[],
+  sectionRanges: readonly EpubSpineSectionRange[],
+  tocEntries: readonly EmbeddedTocEntry[],
+  registry: EbookMarkdownFragmentRegistry,
+): void {
+  const mutations = collectEpubTocAnchorMutations(
+    lines,
+    sectionRanges,
+    tocEntries,
+    registry,
+  );
   if (mutations.length > 0) {
     applyLineMutations(lines, mutations);
   }

@@ -1,7 +1,7 @@
 import type * as monaco from "monaco-editor";
 
 export type ReaderScrollKeyHandlerOptions = {
-  /** 空格键：下一屏（与 PageDown / scrollByPageStep(1) 相同逻辑），并避免触发只读空提示气泡 */
+  /** 空格键：只读下一屏（阅读尺开启时按聚焦行数移尺），并避免触发只读空提示气泡 */
   onSpacePageDown?: () => void;
   /**
    * 为 false 时不做任何只读侧键位拦截（空格翻页、方向键等），交给 Monaco 正常编辑。
@@ -12,7 +12,8 @@ export type ReaderScrollKeyHandlerOptions = {
 
 /**
  * 阅读器只读模式下：屏蔽左右/Home/End/Delete 与无意义剪贴板快捷键。
- * 空格改为下一屏滚动（见 options）；上下方向键/PageUp/PageDown 改由应用层快捷键系统统一处理，便于用户自定义。
+ * 空格改为下一屏滚动（见 options；窗口快捷键也会把只读空格当下一屏，焦点不在编辑器时仍能翻页）；
+ * 上下方向键/PageUp/PageDown 改由应用层快捷键系统统一处理，便于用户自定义。
  */
 export function installReaderScrollKeyHandler(
   monacoApi: typeof monaco,

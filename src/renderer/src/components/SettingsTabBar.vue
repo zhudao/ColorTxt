@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import ScrollableTabNav from "./ScrollableTabNav.vue";
+
 export type SettingsTabId =
   | "general"
   | "reading"
@@ -7,7 +9,9 @@ export type SettingsTabId =
   | "ai"
   | "vectorModel"
   | "txt2img"
-  | "skills";
+  | "skills"
+  | "proxy"
+  | "webDav";
 
 withDefaults(
   defineProps<{
@@ -25,91 +29,116 @@ const emit = defineEmits<{
 
 <template>
   <div class="settingsTabBar" role="tablist" aria-label="设置分类">
-    <div class="tabs">
-      <button
-        type="button"
-        role="tab"
-        class="tabBtn"
-        :class="{ active: activeTab === 'general' }"
-        :aria-selected="activeTab === 'general'"
-        @click="emit('update:activeTab', 'general')"
-      >
-        常规
-      </button>
-      <button
-        type="button"
-        role="tab"
-        class="tabBtn"
-        :class="{ active: activeTab === 'reading' }"
-        :aria-selected="activeTab === 'reading'"
-        @click="emit('update:activeTab', 'reading')"
-      >
-        阅读
-      </button>
-      <button
-        type="button"
-        role="tab"
-        class="tabBtn"
-        :class="{ active: activeTab === 'edit' }"
-        :aria-selected="activeTab === 'edit'"
-        @click="emit('update:activeTab', 'edit')"
-      >
-        编辑
-      </button>
-      <button
-        type="button"
-        role="tab"
-        class="tabBtn"
-        :class="{ active: activeTab === 'voiceRead' }"
-        :aria-selected="activeTab === 'voiceRead'"
-        @click="emit('update:activeTab', 'voiceRead')"
-      >
-        语音朗读
-      </button>
-      <button
-        type="button"
-        role="tab"
-        class="tabBtn"
-        :class="{ active: activeTab === 'ai' }"
-        :aria-selected="activeTab === 'ai'"
-        @click="emit('update:activeTab', 'ai')"
-      >
-        AI 阅读助手
-      </button>
-      <button
-        v-show="showAiExtensionTabs"
-        type="button"
-        role="tab"
-        class="tabBtn"
-        :class="{ active: activeTab === 'vectorModel' }"
-        :aria-selected="activeTab === 'vectorModel'"
-        @click="emit('update:activeTab', 'vectorModel')"
-      >
-        向量模型
-      </button>
-      <button
-        v-show="showAiExtensionTabs"
-        type="button"
-        role="tab"
-        class="tabBtn"
-        :class="{ active: activeTab === 'txt2img' }"
-        :aria-selected="activeTab === 'txt2img'"
-        @click="emit('update:activeTab', 'txt2img')"
-      >
-        角色卡
-      </button>
-      <button
-        v-show="showAiExtensionTabs"
-        type="button"
-        role="tab"
-        class="tabBtn"
-        :class="{ active: activeTab === 'skills' }"
-        :aria-selected="activeTab === 'skills'"
-        @click="emit('update:activeTab', 'skills')"
-      >
-        技能
-      </button>
-    </div>
+    <ScrollableTabNav
+      :active-key="activeTab"
+      :content-key="showAiExtensionTabs"
+    >
+      <div class="tabs">
+        <button
+          type="button"
+          role="tab"
+          class="tabBtn"
+          :class="{ active: activeTab === 'general' }"
+          :aria-selected="activeTab === 'general'"
+          @click="emit('update:activeTab', 'general')"
+        >
+          常规
+        </button>
+        <button
+          type="button"
+          role="tab"
+          class="tabBtn"
+          :class="{ active: activeTab === 'reading' }"
+          :aria-selected="activeTab === 'reading'"
+          @click="emit('update:activeTab', 'reading')"
+        >
+          阅读
+        </button>
+        <button
+          type="button"
+          role="tab"
+          class="tabBtn"
+          :class="{ active: activeTab === 'edit' }"
+          :aria-selected="activeTab === 'edit'"
+          @click="emit('update:activeTab', 'edit')"
+        >
+          编辑
+        </button>
+        <button
+          type="button"
+          role="tab"
+          class="tabBtn"
+          :class="{ active: activeTab === 'voiceRead' }"
+          :aria-selected="activeTab === 'voiceRead'"
+          @click="emit('update:activeTab', 'voiceRead')"
+        >
+          语音朗读
+        </button>
+        <button
+          type="button"
+          role="tab"
+          class="tabBtn"
+          :class="{ active: activeTab === 'ai' }"
+          :aria-selected="activeTab === 'ai'"
+          @click="emit('update:activeTab', 'ai')"
+        >
+          AI 阅读助手
+        </button>
+        <button
+          v-show="showAiExtensionTabs"
+          type="button"
+          role="tab"
+          class="tabBtn"
+          :class="{ active: activeTab === 'vectorModel' }"
+          :aria-selected="activeTab === 'vectorModel'"
+          @click="emit('update:activeTab', 'vectorModel')"
+        >
+          向量模型
+        </button>
+        <button
+          v-show="showAiExtensionTabs"
+          type="button"
+          role="tab"
+          class="tabBtn"
+          :class="{ active: activeTab === 'txt2img' }"
+          :aria-selected="activeTab === 'txt2img'"
+          @click="emit('update:activeTab', 'txt2img')"
+        >
+          角色卡
+        </button>
+        <button
+          v-show="showAiExtensionTabs"
+          type="button"
+          role="tab"
+          class="tabBtn"
+          :class="{ active: activeTab === 'skills' }"
+          :aria-selected="activeTab === 'skills'"
+          @click="emit('update:activeTab', 'skills')"
+        >
+          技能
+        </button>
+        <button
+          type="button"
+          role="tab"
+          class="tabBtn"
+          :class="{ active: activeTab === 'proxy' }"
+          :aria-selected="activeTab === 'proxy'"
+          @click="emit('update:activeTab', 'proxy')"
+        >
+          代理
+        </button>
+        <button
+          type="button"
+          role="tab"
+          class="tabBtn"
+          :class="{ active: activeTab === 'webDav' }"
+          :aria-selected="activeTab === 'webDav'"
+          @click="emit('update:activeTab', 'webDav')"
+        >
+          WebDAV
+        </button>
+      </div>
+    </ScrollableTabNav>
   </div>
 </template>
 
@@ -118,6 +147,7 @@ const emit = defineEmits<{
   flex-shrink: 0;
   margin-bottom: 0;
   border-bottom: 1px solid var(--border);
+  min-width: 0;
 }
 
 .tabs {

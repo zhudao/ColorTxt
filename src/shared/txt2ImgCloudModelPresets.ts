@@ -21,6 +21,8 @@ export const TXT2IMG_CLOUD_MODEL_SUGGESTIONS: Record<
     "dall-e-3",
     "dall-e-2",
   ],
+  agnes_images: ["agnes-image-2.1-flash", "agnes-image-2.0-flash"],
+  minimax_images: ["image-01"],
   dashscope_wanx: [
     "wan2.6-t2i",
     "wan2.5-t2i-preview",

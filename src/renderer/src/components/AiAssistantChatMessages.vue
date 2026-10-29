@@ -103,7 +103,7 @@ function onAiFoldContentPointerDown(ev: PointerEvent) {
               :key="
                 row.rowKind === 'think'
                   ? `th-${row.segIdx}`
-                  : `tl-${row.tool.toolCallId}-${row.segIdx}`
+                  : `tl-${row.tool.toolCallId || row.tool.id}`
               "
             >
               <AiAssistantDetailsFold
@@ -173,7 +173,7 @@ function onAiFoldContentPointerDown(ev: PointerEvent) {
                 :title="row.tool.mindmap.title"
                 :markdown="row.tool.mindmap.markdown"
                 :stats="row.tool.mindmap.stats"
-                :chapters="chapters ?? []"
+                :chapters="chapters"
               />
               <AiWordcloudView
                 v-if="row.rowKind === 'tool' && row.tool.wordcloud"

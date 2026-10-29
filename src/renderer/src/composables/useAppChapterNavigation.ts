@@ -16,7 +16,10 @@ import {
   buildChaptersFromReaderDisplayText,
 } from "../reader/readerDisplayPipeline";
 import { yieldToUi } from "../ebook/yieldToUi";
-import type { ReaderViewportRestoreAnchor } from "../reader/readerViewportAnchor";
+import {
+  chapterJumpAnchorSlotFromTop,
+  type ReaderViewportRestoreAnchor,
+} from "../reader/readerViewportAnchor";
 import type { useTxtStreamPipeline } from "./useTxtStreamPipeline";
 
 type Stream = ReturnType<typeof useTxtStreamPipeline>;
@@ -32,6 +35,8 @@ export function useAppChapterNavigation(deps: {
   currentFileIsMarkdown: Ref<boolean>;
   readerEditMode: Ref<boolean>;
   readingProgressSynced: Ref<boolean>;
+  /** 全屏过渡中：勿用中间态视口写进度 / 改章节高亮 */
+  suppressViewportProgressUpdates?: Ref<boolean>;
   stream: Stream;
   touchRecentFile: (
     path: string,
@@ -59,6 +64,9 @@ export function useAppChapterNavigation(deps: {
     fn: () => Promise<T> | T,
   ) => Promise<T>;
   onAfterChapterListRefresh?: () => void | Promise<void>;
+  readingRulerEnabled: Ref<boolean>;
+  /** 晚绑定：朗读中（含暂停）不走阅读尺居中切章 */
+  isVoiceReadActive?: () => boolean;
 }) {
   function resolveChapterListIndex(ch: Chapter): number {
     const list = deps.chapters.value;
@@ -74,7 +82,22 @@ export function useAppChapterNavigation(deps: {
   }
 
   function jumpToChapter(ch: Chapter) {
-    deps.readerRef.value?.jumpToLine(ch.lineNumber);
+    if (
+      deps.readingRulerEnabled.value &&
+      !deps.readerEditMode.value &&
+      !deps.isVoiceReadActive?.()
+    ) {
+      deps.readerRef.value?.scrollChapterTitleToRulerFocus?.(
+        ch.lineNumber,
+        true,
+      );
+    } else {
+      deps.readerRef.value?.scrollToLineNearTop?.(
+        ch.lineNumber,
+        true,
+        chapterJumpAnchorSlotFromTop(ch.headingLevel),
+      );
+    }
     const idx = resolveChapterListIndex(ch);
     if (idx !== deps.activeChapterIdx.value) deps.activeChapterIdx.value = idx;
   }
@@ -110,6 +133,7 @@ export function useAppChapterNavigation(deps: {
   }
 
   function onProbeLineChange(probeLine: number, fromScroll?: boolean) {
+    if (deps.suppressViewportProgressUpdates?.value) return;
     deps.lastProbeLine.value = probeLine;
     const idx = pickActiveChapterIdx(deps.chapters.value, probeLine);
     if (idx !== deps.activeChapterIdx.value) {

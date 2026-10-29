@@ -1,8 +1,16 @@
+import { normalizeReaderAnnotations } from "../utils/readerAnnotations";
+import {
+  removeHighlightGroupFromMap,
+  removeHighlightTermFromMap,
+  setHighlightGroupColorInMap,
+  upsertHighlightGroupInMap,
+} from "../utils/highlightWords";
 import type {
   CharacterBookStylePersisted,
   CharacterGender,
   CharacterRosterEntry,
 } from "@shared/characterTypes";
+import { normalizeVolcengineSpeechModePair } from "@shared/voiceReadVolcengineAudio";
 
 export type {
   CharacterBookStylePersisted,
@@ -20,8 +28,41 @@ export type FileBookmarkItem = {
 /** Monaco `saveViewState()` 的 JSON 形态，按路径持久化在 meta 中 */
 export type PersistedEditorViewState = Record<string, unknown>;
 
-/** 自定义高亮词：键为索引字符串 `"0"`,`"1"`…，值为该索引下高亮词（仅存索引不存色值） */
-export type HighlightWordsByIndex = Record<string, string[]>;
+/**
+ * 自定义高亮词：键为色索引字符串 `"0"`,`"1"`…，值为该色下的**词组**列表。
+ * 每组 `string[]` 长度 ≥ 1；侧栏一行一组，多词组内各词同色上色。
+ * 旧版曾为 `Record<string, string[]>`（扁平词列表），由 normalize 迁成每词一组。
+ */
+export type HighlightWordsByIndex = Record<string, string[][]>;
+
+export type ReaderLineationType = "marker" | "wavy" | "straight";
+
+export type ReaderAnnotationRecord = {
+  id: string;
+  startPhysicalLine: number;
+  startColumn: number;
+  endPhysicalLine: number;
+  endColumn: number;
+  /** 创建时 Monaco 展示行（压缩空行切换后仍准确定位） */
+  startDisplayLine?: number;
+  endDisplayLine?: number;
+  /** 源文件物理区间原文（用于校验是否失效） */
+  text: string;
+  /** 阅读器展示层原文（简繁/全半角等与当前展示一致；与 `text` 相同时可不写入） */
+  displayText?: string;
+  lineation?: {
+    type: ReaderLineationType;
+    colorIndex: number;
+  };
+  note?: {
+    content: string;
+    createdAt: number;
+    updatedAt: number;
+  };
+  createdAt: number;
+  updatedAt: number;
+  stale?: boolean;
+};
 
 export type FileMetaRecord = {
   path: string;
@@ -44,6 +85,8 @@ export type FileMetaRecord = {
   bookmarks: FileBookmarkItem[];
   /** 按高亮色索引分组的高亮词；索引越界时阅读器忽略该桶 */
   highlightWordsByIndex?: HighlightWordsByIndex;
+  /** 阅读器划线 / 笔记标注 */
+  readerAnnotations?: ReaderAnnotationRecord[];
   /**
    * 应用内最后一次打开该文件（阅读器开始加载该会话路径）的时间戳（ms）。
    * 与 `updatedAt` 分离：改分类等操作也会刷新 `updatedAt`，但不应影响「打开时间」排序。
@@ -109,6 +152,34 @@ function normalizeEditorViewState(
 
 const MAX_HIGHLIGHT_TERM_LEN = 100;
 
+function normalizeHighlightGroupTerms(
+  rawGroup: unknown,
+  seenGlobal: Set<string>,
+): string[] | null {
+  /** 旧版扁平：桶内元素为 string */
+  if (typeof rawGroup === "string") {
+    const t = rawGroup.trim();
+    if (!t || t.length > MAX_HIGHLIGHT_TERM_LEN || seenGlobal.has(t)) {
+      return null;
+    }
+    seenGlobal.add(t);
+    return [t];
+  }
+  if (!Array.isArray(rawGroup)) return null;
+  const terms: string[] = [];
+  const seenLocal = new Set<string>();
+  for (const w of rawGroup) {
+    if (typeof w !== "string") continue;
+    const t = w.trim();
+    if (!t || t.length > MAX_HIGHLIGHT_TERM_LEN) continue;
+    if (seenLocal.has(t) || seenGlobal.has(t)) continue;
+    seenLocal.add(t);
+    seenGlobal.add(t);
+    terms.push(t);
+  }
+  return terms.length > 0 ? terms : null;
+}
+
 export function normalizeHighlightWordsByIndex(
   raw: unknown,
 ): HighlightWordsByIndex | undefined {
@@ -117,21 +188,17 @@ export function normalizeHighlightWordsByIndex(
   }
   const o = raw as Record<string, unknown>;
   const out: HighlightWordsByIndex = {};
+  const seenGlobal = new Set<string>();
   for (const [k, v] of Object.entries(o)) {
     const idx = Number.parseInt(k, 10);
     if (!Number.isFinite(idx) || idx < 0 || String(idx) !== k) continue;
     if (!Array.isArray(v)) continue;
-    const words: string[] = [];
-    const seen = new Set<string>();
-    for (const w of v) {
-      if (typeof w !== "string") continue;
-      const t = w.trim();
-      if (!t || t.length > MAX_HIGHLIGHT_TERM_LEN) continue;
-      if (seen.has(t)) continue;
-      seen.add(t);
-      words.push(t);
+    const groups: string[][] = [];
+    for (const item of v) {
+      const group = normalizeHighlightGroupTerms(item, seenGlobal);
+      if (group) groups.push(group);
     }
-    if (words.length) out[k] = words;
+    if (groups.length) out[k] = groups;
   }
   return Object.keys(out).length ? out : undefined;
 }
@@ -140,7 +207,10 @@ const MAX_STYLE_PREFIX_ZH = 8000;
 const MAX_STYLE_NOTE_ZH = 4000;
 const MAX_ROSTER_ENTRIES = 200;
 const MAX_CHAR_FIELD = 32000;
+const MAX_VOICE_SAMPLE_LINE = 2000;
+const MAX_VOICE_SAMPLE_QUOTES = 8;
 const MAX_DISPLAY_NAME = 200;
+const MAX_ALIASES = 500;
 const MAX_ID_LEN = 64;
 
 function clampStr(s: string, max: number): string {
@@ -153,7 +223,7 @@ function normalizeCharacterGender(raw: unknown): CharacterGender {
   return "unknown";
 }
 
-function normalizeCharacterBookStyle(
+export function normalizeCharacterBookStyle(
   raw: unknown,
 ): CharacterBookStylePersisted | undefined {
   if (raw == null || typeof raw !== "object" || Array.isArray(raw)) {
@@ -181,6 +251,41 @@ function normalizeCharacterBookStyle(
   return out;
 }
 
+function normalizeVoiceReadSampleQuotes(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of raw.slice(0, MAX_VOICE_SAMPLE_QUOTES)) {
+    if (typeof item !== "string") continue;
+    const t = clampStr(item.trim(), MAX_VOICE_SAMPLE_LINE);
+    if (!t || seen.has(t)) continue;
+    seen.add(t);
+    out.push(t);
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+function normalizeCharacterVoiceReadSpeech(
+  o: Record<string, unknown>,
+  voiceId: string,
+): Pick<CharacterRosterEntry, "voiceReadLanguage" | "voiceReadDialect"> {
+  if (!voiceId.trim()) return {};
+  const mode = normalizeVolcengineSpeechModePair({
+    language:
+      typeof o.voiceReadLanguage === "string"
+        ? clampStr(o.voiceReadLanguage, 64)
+        : undefined,
+    dialect:
+      typeof o.voiceReadDialect === "string"
+        ? clampStr(o.voiceReadDialect, 64)
+        : undefined,
+  });
+  return {
+    voiceReadLanguage: mode.language || undefined,
+    voiceReadDialect: mode.dialect || undefined,
+  };
+}
+
 function normalizeCharacterRosterEntry(
   raw: unknown,
 ): CharacterRosterEntry | null {
@@ -193,9 +298,15 @@ function normalizeCharacterRosterEntry(
       ? clampStr(o.displayName, MAX_DISPLAY_NAME)
       : "";
   if (!id || !displayName) return null;
+  const voiceReadVoiceId =
+    typeof o.voiceReadVoiceId === "string"
+      ? clampStr(o.voiceReadVoiceId, 256)
+      : "";
   return {
     id,
     displayName,
+    aliases:
+      typeof o.aliases === "string" ? clampStr(o.aliases, MAX_ALIASES) : "",
     gender: normalizeCharacterGender(o.gender),
     ageText:
       typeof o.ageText === "string"
@@ -223,17 +334,42 @@ function normalizeCharacterRosterEntry(
       typeof o.retrieveThinkingText === "string"
         ? clampStr(o.retrieveThinkingText, MAX_CHAR_FIELD)
         : "",
+    voiceReadVoiceId,
+    ...normalizeCharacterVoiceReadSpeech(o, voiceReadVoiceId),
+    voiceReadSampleLine:
+      typeof o.voiceReadSampleLine === "string"
+        ? clampStr(o.voiceReadSampleLine, MAX_VOICE_SAMPLE_LINE) || undefined
+        : undefined,
+    voiceReadSampleQuotes: normalizeVoiceReadSampleQuotes(
+      o.voiceReadSampleQuotes,
+    ),
+    voiceReadSampleQuoteIndex:
+      typeof o.voiceReadSampleQuoteIndex === "number" &&
+      Number.isFinite(o.voiceReadSampleQuoteIndex)
+        ? Math.max(
+            0,
+            Math.min(
+              MAX_VOICE_SAMPLE_QUOTES - 1,
+              Math.floor(o.voiceReadSampleQuoteIndex),
+            ),
+          )
+        : undefined,
   };
 }
 
-function normalizeCharacterRoster(raw: unknown): CharacterRosterEntry[] | undefined {
+export function normalizeCharacterRoster(
+  raw: unknown,
+): CharacterRosterEntry[] | undefined {
   if (!Array.isArray(raw)) return undefined;
-  const byId = new Map<string, CharacterRosterEntry>();
+  const byName = new Map<string, CharacterRosterEntry>();
   for (const row of raw.slice(0, MAX_ROSTER_ENTRIES + 50)) {
     const n = normalizeCharacterRosterEntry(row);
-    if (n) byId.set(n.id, n);
+    if (!n) continue;
+    const key = n.displayName.trim();
+    if (!key) continue;
+    byName.set(key, n);
   }
-  const list = [...byId.values()].slice(0, MAX_ROSTER_ENTRIES);
+  const list = [...byName.values()].slice(0, MAX_ROSTER_ENTRIES);
   return list.length ? list : undefined;
 }
 
@@ -268,6 +404,7 @@ function normalizeRecord(item: Partial<FileMetaRecord>): FileMetaRecord | null {
   const highlightWordsByIndex = normalizeHighlightWordsByIndex(
     item.highlightWordsByIndex,
   );
+  const readerAnnotations = normalizeReaderAnnotations(item.readerAnnotations);
   const convertedMdPath =
     typeof item.convertedMdPath === "string" && item.convertedMdPath.trim()
       ? item.convertedMdPath.trim()
@@ -297,6 +434,7 @@ function normalizeRecord(item: Partial<FileMetaRecord>): FileMetaRecord | null {
     viewportTopPhysicalLine,
     bookmarks,
     highlightWordsByIndex,
+    ...(readerAnnotations.length ? { readerAnnotations } : {}),
     lastOpenedAt,
     updatedAt,
     ...(characterBookStyle ? { characterBookStyle } : {}),
@@ -333,6 +471,76 @@ export function persistFileMetaRecords(
   } catch {
     // ignore
   }
+}
+
+export type MergeFileMetaRecordsOptions = {
+  /**
+   * 本窗口正在阅读的路径：合并时始终保留其 progress / editorViewState /
+   * viewportTopPhysicalLine（滚动常原地改进度且不刷新 updatedAt）。
+   */
+  preferLocalReadingPath?: string | null;
+  /** 同 updatedAt 时偏向哪一侧；写盘用 local，storage 同步用 remote */
+  tieBreak?: "local" | "remote";
+};
+
+function fileMetaRecordsByPathKey(
+  items: FileMetaRecord[],
+): Map<string, FileMetaRecord> {
+  const map = new Map<string, FileMetaRecord>();
+  for (const r of items) {
+    map.set(normalizeFileMetaPathKey(r.path), r);
+  }
+  return map;
+}
+
+/**
+ * 多窗口共用 localStorage 时合并两侧 file.meta：按路径、以 updatedAt 决胜；
+ * 正在阅读的文件保留本窗口阅读位置，避免他窗整表写入冲掉未落盘进度。
+ */
+export function mergeFileMetaRecords(
+  local: FileMetaRecord[],
+  remote: FileMetaRecord[],
+  opts?: MergeFileMetaRecordsOptions,
+): FileMetaRecord[] {
+  const tieBreak = opts?.tieBreak ?? "local";
+  const preferKey = opts?.preferLocalReadingPath
+    ? normalizeFileMetaPathKey(opts.preferLocalReadingPath)
+    : "";
+  const localMap = fileMetaRecordsByPathKey(local);
+  const remoteMap = fileMetaRecordsByPathKey(remote);
+  const keys = new Set<string>([...localMap.keys(), ...remoteMap.keys()]);
+  const out: FileMetaRecord[] = [];
+
+  for (const key of keys) {
+    const L = localMap.get(key);
+    const R = remoteMap.get(key);
+    if (!L) {
+      out.push(R!);
+      continue;
+    }
+    if (!R) {
+      out.push(L);
+      continue;
+    }
+
+    let pick: FileMetaRecord;
+    if (L.updatedAt > R.updatedAt) pick = L;
+    else if (R.updatedAt > L.updatedAt) pick = R;
+    else pick = tieBreak === "remote" ? R : L;
+
+    if (key === preferKey) {
+      out.push({
+        ...pick,
+        progress: L.progress,
+        editorViewState: L.editorViewState,
+        viewportTopPhysicalLine: L.viewportTopPhysicalLine,
+      });
+    } else {
+      out.push(pick);
+    }
+  }
+
+  return out;
 }
 
 export function findFileMetaRecord(items: FileMetaRecord[], path: string) {
@@ -388,6 +596,7 @@ export function upsertFileMetaRecord(
     viewportTopPhysicalLine: prev?.viewportTopPhysicalLine,
     bookmarks: prev?.bookmarks ?? [],
     highlightWordsByIndex: prev?.highlightWordsByIndex,
+    readerAnnotations: prev?.readerAnnotations,
     convertedMdPath: prev?.convertedMdPath,
     sourceMtimeMsAtConvert: prev?.sourceMtimeMsAtConvert,
     lastOpenedAt: prev?.lastOpenedAt,
@@ -453,34 +662,74 @@ export function appendHighlightTermForFile(
   return assignHighlightTermToColorForFile(items, path, colorIndex, text);
 }
 
-/** 将高亮词归到指定高亮色：先从所有索引桶中移除同一词，再写入目标桶（一词仅属一个索引） */
+/** 将单词汇组归到指定高亮色（选区添词） */
 export function assignHighlightTermToColorForFile(
   items: FileMetaRecord[],
   path: string,
   colorIndex: number,
   text: string,
 ) {
-  let term = text.trim();
-  if (!term || colorIndex < 0 || !Number.isFinite(colorIndex)) return items;
-  if (term.length > MAX_HIGHLIGHT_TERM_LEN) {
-    term = term.slice(0, MAX_HIGHLIGHT_TERM_LEN);
-  }
-  const targetKey = String(Math.floor(colorIndex));
-  return upsertFileMetaRecord(items, path, (prev) => {
-    const base = { ...(prev?.highlightWordsByIndex ?? {}) };
-    for (const k of Object.keys(base)) {
-      const next = base[k]!.filter((w) => w !== term);
-      if (next.length === 0) delete base[k];
-      else base[k] = next;
-    }
-    const list = [...(base[targetKey] ?? [])];
-    if (!list.includes(term)) list.push(term);
-    base[targetKey] = list;
-    return { highlightWordsByIndex: base };
+  return upsertHighlightGroupForFile(items, path, colorIndex, [text]);
+}
+
+/** 写入 / 更新词组到本书指定高亮色 */
+export function upsertHighlightGroupForFile(
+  items: FileMetaRecord[],
+  path: string,
+  colorIndex: number,
+  terms: readonly string[],
+  replaceStoredTerms?: readonly string[],
+) {
+  if (colorIndex < 0 || !Number.isFinite(colorIndex)) return items;
+  return upsertFileMetaRecord(items, path, (rec) => {
+    const next = upsertHighlightGroupInMap(
+      rec?.highlightWordsByIndex,
+      colorIndex,
+      terms,
+      replaceStoredTerms ? { replaceStoredTerms } : undefined,
+    );
+    if (next === rec?.highlightWordsByIndex) return {};
+    return { highlightWordsByIndex: next };
   });
 }
 
-/** 从所有高亮色桶中移除该高亮词（与存储项字符串全等匹配） */
+/** 将本书已有词组迁到另一高亮色 */
+export function setHighlightGroupColorForFile(
+  items: FileMetaRecord[],
+  path: string,
+  storedTerms: readonly string[],
+  colorIndex: number,
+) {
+  return upsertFileMetaRecord(items, path, (rec) => {
+    const next = setHighlightGroupColorInMap(
+      rec?.highlightWordsByIndex,
+      storedTerms,
+      colorIndex,
+    );
+    if (next === rec?.highlightWordsByIndex) return {};
+    return { highlightWordsByIndex: next };
+  });
+}
+
+/** 按整组删除（storedTerms 全等） */
+export function removeHighlightGroupFromFile(
+  items: FileMetaRecord[],
+  path: string,
+  storedTerms: readonly string[],
+) {
+  return upsertFileMetaRecord(items, path, (prev) => {
+    const next = removeHighlightGroupFromMap(
+      prev?.highlightWordsByIndex,
+      storedTerms,
+    );
+    if (next === prev?.highlightWordsByIndex) return {};
+    return {
+      highlightWordsByIndex: next,
+    };
+  });
+}
+
+/** 从各组中剔除该词（多词组收缩）；兼容旧单调用 */
 export function removeHighlightTermFromFile(
   items: FileMetaRecord[],
   path: string,
@@ -489,18 +738,58 @@ export function removeHighlightTermFromFile(
   const term = text.trim();
   if (!term) return items;
   return upsertFileMetaRecord(items, path, (prev) => {
-    const base = { ...(prev?.highlightWordsByIndex ?? {}) };
-    let changed = false;
-    for (const k of Object.keys(base)) {
-      const prevList = base[k]!;
-      const next = prevList.filter((w) => w !== term);
-      if (next.length !== prevList.length) changed = true;
-      if (next.length === 0) delete base[k];
-      else base[k] = next;
-    }
-    if (!changed) return {};
+    const next = removeHighlightTermFromMap(
+      prev?.highlightWordsByIndex,
+      term,
+    );
+    if (next === prev?.highlightWordsByIndex) return {};
     return {
-      highlightWordsByIndex: Object.keys(base).length > 0 ? base : undefined,
+      highlightWordsByIndex: next,
     };
   });
+}
+
+export function upsertReaderAnnotationForFile(
+  items: FileMetaRecord[],
+  path: string,
+  annotation: ReaderAnnotationRecord,
+) {
+  return upsertFileMetaRecord(items, path, (prev) => {
+    const base = [...(prev?.readerAnnotations ?? [])];
+    const idx = base.findIndex((a) => a.id === annotation.id);
+    if (idx >= 0) base[idx] = annotation;
+    else base.push(annotation);
+    return { readerAnnotations: base };
+  });
+}
+
+export function removeReaderAnnotationForFile(
+  items: FileMetaRecord[],
+  path: string,
+  id: string,
+) {
+  return upsertFileMetaRecord(items, path, (prev) => ({
+    readerAnnotations: (prev?.readerAnnotations ?? []).filter(
+      (a) => a.id !== id,
+    ),
+  }));
+}
+
+export function setReaderAnnotationsForFile(
+  items: FileMetaRecord[],
+  path: string,
+  annotations: ReaderAnnotationRecord[],
+) {
+  return upsertFileMetaRecord(items, path, () => ({
+    readerAnnotations: annotations.length ? annotations : undefined,
+  }));
+}
+
+export function clearReaderAnnotationsForFile(
+  items: FileMetaRecord[],
+  path: string,
+) {
+  return upsertFileMetaRecord(items, path, () => ({
+    readerAnnotations: undefined,
+  }));
 }

@@ -2,7 +2,7 @@ export type Chapter = {
   title: string;
   lineNumber: number;
   charCount: number;
-  /** 1 = 顶栏；子级递增。侧栏缩进 = (headingLevel - 1) * 10px */
+  /** 1 = 顶栏；子级递增。侧栏缩进 = (headingLevel - 1) * 10px；有子级时可折叠 */
   headingLevel?: number;
   /** 嵌入目录写入顺序（侧栏与粘性大纲用，勿按展示行号重排） */
   tocOrder?: number;
@@ -310,6 +310,50 @@ export function physicalOffsetToDisplayOffset(
     return Math.min(off + indentLen, indentLen);
   }
   return indentLen + (off - leadingRemoved);
+}
+
+/** Monaco 展示行 0-based 偏移 → 物理行 0-based 偏移（{@link physicalOffsetToDisplayOffset} 的逆） */
+export function displayOffsetToPhysicalOffset(
+  physicalLine: string,
+  displayOffset: number,
+  options?: { exemptChapterTitle?: boolean },
+): number {
+  const displayLine = applyLeadIndentFullWidth(physicalLine, options);
+  if (displayLine === physicalLine) {
+    return Math.max(
+      0,
+      Math.min(Math.floor(displayOffset), physicalLine.length),
+    );
+  }
+  const stripped = physicalLine.replace(RE_LEADING_WHITE_FOR_INDENT, "");
+  const leadingRemoved = physicalLine.length - stripped.length;
+  const indentLen = displayLine.length - stripped.length;
+  const d = Math.max(0, Math.floor(displayOffset));
+  if (d < indentLen) {
+    const mapped = d - indentLen + leadingRemoved;
+    return Math.max(0, Math.min(mapped, physicalLine.length));
+  }
+  return Math.min(physicalLine.length, leadingRemoved + (d - indentLen));
+}
+
+/** Monaco 1-based 列号 → 物理行 0-based 切片起点/终点（闭开区间用） */
+export function displayColumnsToPhysicalSlice(
+  physicalLine: string,
+  startColumn: number,
+  endColumn: number,
+  options?: { exemptChapterTitle?: boolean },
+): { start: number; end: number } {
+  const start0 = displayOffsetToPhysicalOffset(
+    physicalLine,
+    startColumn - 1,
+    options,
+  );
+  const end0 = displayOffsetToPhysicalOffset(
+    physicalLine,
+    endColumn - 1,
+    options,
+  );
+  return { start: start0, end: Math.max(start0, end0) };
 }
 
 /** 物理行内匹配区间 → Monaco 1-based 列号（与 {@link applyLeadIndentFullWidth} 展示文一致） */

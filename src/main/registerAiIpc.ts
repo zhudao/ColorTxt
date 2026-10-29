@@ -1,13 +1,16 @@
 import { app, dialog, ipcMain, type FileFilter } from "electron";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import type {
-  AIAgentStartPayload,
-  AIChunkRecord,
-  AIChatStreamPayload,
-  AIConfig,
-  BookStyleInferResult,
-  PortraitExtractResult,
+import {
+  normalizeEmbeddingEndpoint,
+  type AIAgentStartPayload,
+  type AIChunkRecord,
+  type AIChatStreamPayload,
+  type AIConfig,
+  type AIWordcloudToolResult,
+  type BookStyleInferResult,
+  type PortraitExtractResult,
+  type CharacterGoldenQuotesResult,
 } from "@shared/aiTypes";
 import type { AiTxt2ImgInvokeResult } from "@shared/aiTxt2ImgIpc";
 import {
@@ -15,28 +18,33 @@ import {
   readActiveChatEndpoint,
   readActiveTxt2ImgConfig,
 } from "@shared/aiEndpointProfiles";
+import { resolveEffectiveSystemPromptExtraFromChat } from "@shared/aiSystemPromptPresets";
 import {
   loadAiConfig,
   mergeAiConfigWithDefaults,
   saveAiConfig,
-} from "./aiConfig";
-import { embedTexts, probeEmbeddingDimension } from "./aiEmbedding";
-import { fetchOpenAiCompatModelIds } from "./openAiCompatModelList";
-import { normalizeChatPresetBaseUrl } from "@shared/apiEndpointPresets";
+} from "./ai/infra/config";
+import { embedTexts, probeEmbeddingDimension } from "./ai/rag/embedding";
+import { fetchOpenAiCompatModelIds } from "./ai/infra/openAiCompatModelList";
+import { extractSseErrorMessage } from "./ai/chat/chat";
+import {
+  applyOpenAiCompatAuthHeaders,
+  normalizeChatPresetBaseUrl,
+} from "@shared/apiEndpointPresets";
 import {
   migrateAiDataCacheRoot,
   migrateBuiltinModelCacheRoot,
   openPathInShell,
   upgradeLegacyAiDataLayoutIfNeeded,
-} from "./aiDataFs";
+} from "./ai/infra/dataFs";
 import {
   getDefaultAiDataCacheDirSync,
   getDefaultBuiltinModelCacheDirSync,
-} from "./aiConfig";
+} from "./ai/infra/config";
 import {
   resolveAiDataCacheRoot,
   resolveBuiltinModelCacheRoot,
-} from "./aiPaths";
+} from "./ai/infra/paths";
 import {
   BUILTIN_EMBEDDING_MODELS,
   getBuiltinEmbeddingModel,
@@ -51,26 +59,36 @@ import {
   getLoadedBuiltinModelId,
   isBuiltinModelDownloaded,
   loadBuiltinEmbeddingModel,
-} from "./embedding/localEmbeddingBackend";
-import { reopenAiVectorDb } from "./aiVectorDb";
-import { runAgentChat } from "./aiAgentChat";
-import { abortChatRequest, streamChatCompletion } from "./aiChat";
+} from "./ai/rag/embedding/localBackend";
+import { reopenAiVectorDb } from "./ai/rag/vectorDb";
+import { runAgentChat } from "./ai/chat/agentChat";
+import { abortChatRequest, streamChatCompletion } from "./ai/chat/chat";
+import { runSmartFormatCleanupSegment } from "./ai/chat/textFormatCleanup";
+import type { AISmartFormatSegmentInput } from "@shared/aiSmartFormatTypes";
 import {
   runBookStyleInference,
+  runCharacterGoldenQuotesRetrieve,
   runCharacterPortraitExtract,
   runPortraitPromptZhToEn,
   runTxt2ImgToAbsolutePath,
-} from "./aiCharacterPortrait";
-import { deleteBookSegmentCache } from "./aiSegmentCache";
-import { adaptPortraitPromptForBackend } from "./aiTxt2ImgPromptAdapt";
-import { testTxt2ImgConnection } from "./aiTxt2ImgTestConnection";
-import { mergeTxt2ImgZhGeneralBeforeSpecific } from "./txt2imgMergeZh";
+} from "./ai/tools/characterPortrait";
+import {
+  deleteAllSegmentCache,
+  deleteBookSegmentCache,
+} from "./ai/rag/segmentCache";
+import { rebuildBookSegmentCache } from "./ai/rag/rebuildBookSegmentCache";
+import { runWordcloudTool } from "./ai/tools/wordcloudTool";
+import { adaptPortraitPromptForBackend } from "./ai/txt2img/promptAdapt";
+import { isFetchAborted } from "./ai/txt2img/shared";
+import { testTxt2ImgConnection } from "./ai/txt2img/testConnection";
 import { isTxt2ImgBackend, txt2ImgRequiresApiKey } from "@shared/txt2ImgBackend";
 import {
   appendMessage,
   createThread,
   deleteBookIndex,
+  deleteAllBookIndexes,
   deleteThread,
+  deleteAllThreads,
   deleteEmptyThreadsForBook,
   indexHasBook,
   insertChunksBatch,
@@ -81,13 +99,18 @@ import {
   resetEmbeddingDimension,
   searchChunks,
   updateToolMessageContent,
-} from "./aiVectorDb";
+} from "./ai/rag/vectorDb";
 
 /** 角色「AI 检索」：同一会话的 extract + infer 共用 AbortSignal（renderer 传 retrieveSessionId） */
 const portraitRetrieveSessionAbortById = new Map<number, AbortController>();
 
 /** 侧栏「生成立绘」：单次 txt2imgToPath 会话，可由 renderer 调用 abort 中断 */
 let portraitTxt2ImgSessionAc: AbortController | null = null;
+
+const smartFormatAbortByRequestId = new Map<number, AbortController>();
+
+/** 高亮词「AI 检索」：按 requestId 中止 wordcloud:run */
+const wordcloudRunAbortByRequestId = new Map<number, AbortController>();
 
 function portraitRetrieveSessionAc(sid: number): AbortController {
   let ac = portraitRetrieveSessionAbortById.get(sid);
@@ -547,7 +570,154 @@ export function registerAiIpcHandlers(): void {
       openOrRecreateAiVectorDb(c.embedding.dimension);
       if (typeof bookHash !== "string") return { ok: false };
       deleteBookIndex(bookHash);
+      return { ok: true };
+    },
+  );
+
+  ipcMain.handle(
+    "ai:segment:deleteBook",
+    async (_evt, bookHash: unknown): Promise<{ ok: boolean }> => {
+      const c = await cfg();
+      if (typeof bookHash !== "string") return { ok: false };
       deleteBookSegmentCache(bookHash, c);
+      return { ok: true };
+    },
+  );
+
+  ipcMain.handle(
+    "ai:segment:rebuildBook",
+    async (
+      evt,
+      payload: unknown,
+    ): Promise<
+      { ok: true; chaptersBuilt: number } | { ok: false; error: string }
+    > => {
+      const c = await cfg();
+      if (!isRecord(payload)) return { ok: false, error: "无效参数" };
+      const bookHash =
+        typeof payload.bookHash === "string" ? payload.bookHash : "";
+      const chapterCount = Number(payload.chapterCount);
+      if (!bookHash.trim()) return { ok: false, error: "无效 bookHash" };
+      if (!Number.isFinite(chapterCount) || chapterCount <= 0) {
+        return { ok: false, error: "没有可分词的章节" };
+      }
+      return rebuildBookSegmentCache({
+        webContents: evt.sender,
+        bookHash,
+        chapterCount: Math.trunc(chapterCount),
+        aiConfig: c,
+      });
+    },
+  );
+
+  /**
+   * 侧栏高亮词「AI 检索」：直接跑 semantic 词云管线（不经 Agent）。
+   * unlimitedTerms：加大抽样/分批抽取/抬高候选上限，并返回全部已计数词项。
+   * 可选 requestId + ai:wordcloud:abort 中止。
+   */
+  ipcMain.handle(
+    "ai:wordcloud:run",
+    async (
+      evt,
+      payload: unknown,
+    ): Promise<
+      | { ok: true; result: AIWordcloudToolResult }
+      | { ok: false; error: string; aborted?: boolean }
+    > => {
+      const c = await cfg();
+      if (!c.aiEnabled) {
+        return { ok: false, error: "请先在设置中启用 AI 阅读助手。" };
+      }
+      const chat = readActiveChatEndpoint(c);
+      if (!chat.model?.trim()) {
+        return { ok: false, error: "请先在设置中配置对话模型。" };
+      }
+      if (!isRecord(payload)) return { ok: false, error: "无效参数" };
+      const bookHash =
+        typeof payload.bookHash === "string" ? payload.bookHash.trim() : "";
+      const chapterCount = Number(payload.chapterCount);
+      const semanticQuery =
+        typeof payload.semanticQuery === "string"
+          ? payload.semanticQuery.trim()
+          : "";
+      if (!bookHash) return { ok: false, error: "无效 bookHash" };
+      if (!Number.isFinite(chapterCount) || chapterCount <= 0) {
+        return { ok: false, error: "没有可检索的章节" };
+      }
+      if (!semanticQuery) {
+        return { ok: false, error: "请输入检索语义" };
+      }
+      const title =
+        typeof payload.title === "string" && payload.title.trim()
+          ? payload.title.trim()
+          : `AI 检索：${semanticQuery}`;
+      const unlimitedTerms = payload.unlimitedTerms !== false;
+      const requestId =
+        typeof payload.requestId === "number" &&
+        Number.isFinite(payload.requestId)
+          ? Math.trunc(payload.requestId)
+          : null;
+      let ac: AbortController | null = null;
+      if (requestId != null) {
+        wordcloudRunAbortByRequestId.get(requestId)?.abort();
+        ac = new AbortController();
+        wordcloudRunAbortByRequestId.set(requestId, ac);
+      }
+      try {
+        const result = await runWordcloudTool(
+          {
+            title,
+            mode: "semantic",
+            semanticQuery,
+            scope: "full",
+            unlimitedTerms,
+          },
+          {
+            bookHash,
+            chapterCount: Math.trunc(chapterCount),
+            /** 高亮词 AI 检索始终全书，不受防剧透限制 */
+            spoilerMaxChapterIndex: null,
+            webContents: evt.sender,
+            chat,
+            aiConfig: c,
+            signal: ac?.signal,
+          },
+        );
+        return { ok: true, result };
+      } catch (e) {
+        if (isFetchAborted(e) || ac?.signal.aborted) {
+          return { ok: false, error: "已中止", aborted: true };
+        }
+        const msg = e instanceof Error ? e.message : String(e);
+        return { ok: false, error: msg || "AI 检索失败" };
+      } finally {
+        if (requestId != null) {
+          const cur = wordcloudRunAbortByRequestId.get(requestId);
+          if (cur === ac) wordcloudRunAbortByRequestId.delete(requestId);
+        }
+      }
+    },
+  );
+
+  ipcMain.handle(
+    "ai:wordcloud:abort",
+    (_evt, requestId: unknown): { ok: true } => {
+      if (typeof requestId === "number" && Number.isFinite(requestId)) {
+        const id = Math.trunc(requestId);
+        wordcloudRunAbortByRequestId.get(id)?.abort();
+        wordcloudRunAbortByRequestId.delete(id);
+      }
+      return { ok: true as const };
+    },
+  );
+
+  ipcMain.handle(
+    "ai:index:deleteAll",
+    async (): Promise<{ ok: boolean }> => {
+      const c = await cfg();
+      openOrRecreateAiVectorDb(c.embedding.dimension);
+      deleteAllBookIndexes();
+      deleteAllSegmentCache(c);
       return { ok: true };
     },
   );
@@ -645,7 +815,7 @@ export function registerAiIpcHandlers(): void {
       void streamChatCompletion({
         chat,
         payload: p,
-        configSystemPromptExtra: chat.systemPromptExtra,
+        configSystemPromptExtra: resolveEffectiveSystemPromptExtraFromChat(chat),
         webContents: evt.sender,
       });
       return { ok: true };
@@ -654,6 +824,92 @@ export function registerAiIpcHandlers(): void {
 
   ipcMain.handle("ai:chat:abort", (_evt, requestId: unknown) => {
     if (typeof requestId === "number") abortChatRequest(requestId);
+    return { ok: true as const };
+  });
+
+  ipcMain.handle(
+    "ai:text-format:cleanup",
+    async (evt, payloadRaw: unknown) => {
+      if (!isRecord(payloadRaw)) {
+        return { ok: false as const, error: "无效 payload" };
+      }
+      const requestId = payloadRaw.requestId;
+      if (typeof requestId !== "number" || !Number.isFinite(requestId)) {
+        return { ok: false as const, error: "无效 requestId" };
+      }
+      const segRaw = payloadRaw.segment;
+      if (!isRecord(segRaw) || typeof segRaw.id !== "string") {
+        return { ok: false as const, error: "无效 segment" };
+      }
+      if (typeof segRaw.text !== "string") {
+        return { ok: false as const, error: "无效 segment.text" };
+      }
+      const segment: AISmartFormatSegmentInput = {
+        id: segRaw.id,
+        text: segRaw.text,
+        ...(typeof segRaw.contextBefore === "string"
+          ? { contextBefore: segRaw.contextBefore }
+          : {}),
+        ...(typeof segRaw.contextAfter === "string"
+          ? { contextAfter: segRaw.contextAfter }
+          : {}),
+      };
+      const mergeHardWrap = payloadRaw.mergeHardWrap === true;
+      const fixPunctuation =
+        payloadRaw.fixPunctuation === true ||
+        payloadRaw.fixQuotes === true;
+      const restoreGarbledChars = payloadRaw.restoreGarbledChars === true;
+      const unifyDialogueQuotes =
+        payloadRaw.unifyDialogueQuotes === "none" ||
+        payloadRaw.unifyDialogueQuotes === "double" ||
+        payloadRaw.unifyDialogueQuotes === "corner"
+          ? payloadRaw.unifyDialogueQuotes
+          : "double";
+      const removePromotionalContent =
+        payloadRaw.removePromotionalContent === true;
+      const removePiracyWatermarks =
+        payloadRaw.removePiracyWatermarks === true;
+      const restoreAsteriskMasks = payloadRaw.restoreAsteriskMasks === true;
+      const cleanHtmlRemnants = payloadRaw.cleanHtmlRemnants !== false;
+      const skillPrompt =
+        typeof payloadRaw.skillPrompt === "string"
+          ? payloadRaw.skillPrompt
+          : undefined;
+
+      let ac = smartFormatAbortByRequestId.get(requestId);
+      if (!ac) {
+        ac = new AbortController();
+        smartFormatAbortByRequestId.set(requestId, ac);
+      }
+
+      const c = await cfg();
+      const result = await runSmartFormatCleanupSegment({
+        payload: {
+          requestId,
+          segment,
+          mergeHardWrap,
+          fixPunctuation,
+          unifyDialogueQuotes,
+          removePromotionalContent,
+          removePiracyWatermarks,
+          restoreGarbledChars,
+          restoreAsteriskMasks,
+          cleanHtmlRemnants,
+          ...(skillPrompt !== undefined ? { skillPrompt } : {}),
+        },
+        config: c,
+        webContents: evt.sender,
+        signal: ac.signal,
+      });
+      return { ok: true as const, result };
+    },
+  );
+
+  ipcMain.handle("ai:text-format:abort", (_evt, requestId: unknown) => {
+    if (typeof requestId !== "number") return { ok: true as const };
+    const ac = smartFormatAbortByRequestId.get(requestId);
+    ac?.abort();
+    smartFormatAbortByRequestId.delete(requestId);
     return { ok: true as const };
   });
 
@@ -686,7 +942,7 @@ export function registerAiIpcHandlers(): void {
         embeddingEnabled: c.embeddingEnabled,
         aiConfig: c,
         payload: p,
-        configSystemPromptExtra: chat.systemPromptExtra,
+        configSystemPromptExtra: resolveEffectiveSystemPromptExtraFromChat(chat),
         webContents: evt.sender,
         ragTopKDefault: c.ragTopK,
       });
@@ -796,6 +1052,33 @@ export function registerAiIpcHandlers(): void {
     },
   );
 
+function formatChatConnectionTestError(status: number, raw: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    parsed = null;
+  }
+  const errType =
+    parsed &&
+    typeof parsed === "object" &&
+    (parsed as Record<string, unknown>).error &&
+    typeof (parsed as Record<string, unknown>).error === "object"
+      ? String(
+          ((parsed as Record<string, unknown>).error as Record<string, unknown>)
+            .type ?? "",
+        )
+      : "";
+
+  if (status === 402 || errType === "insufficient_balance") {
+    return "账户余额不足，无法发起对话。";
+  }
+
+  const msg = parsed ? extractSseErrorMessage(parsed) : null;
+  if (msg) return `HTTP ${status}: ${msg}`;
+  return `HTTP ${status}: ${raw.slice(0, 300)}`;
+}
+
   ipcMain.handle(
     "ai:test:chat",
     async (
@@ -813,7 +1096,9 @@ export function registerAiIpcHandlers(): void {
         const headers: Record<string, string> = {
           "Content-Type": "application/json",
         };
-        if (apiKey.trim()) headers.Authorization = `Bearer ${apiKey.trim()}`;
+        if (apiKey.trim()) {
+          applyOpenAiCompatAuthHeaders(headers, baseUrl, apiKey);
+        }
         const res = await fetch(url, {
           method: "POST",
           headers,
@@ -825,7 +1110,10 @@ export function registerAiIpcHandlers(): void {
         });
         if (!res.ok) {
           const t = await res.text().catch(() => "");
-          return { ok: false, error: `HTTP ${res.status}: ${t.slice(0, 300)}` };
+          return {
+            ok: false,
+            error: formatChatConnectionTestError(res.status, t),
+          };
         }
         return { ok: true };
       } catch (e) {
@@ -882,7 +1170,7 @@ export function registerAiIpcHandlers(): void {
         return { ok: false, error: "缺少参数" };
       }
       try {
-        const remoteEndpoint: AIConfig["embedding"] = {
+        const remoteEndpoint = normalizeEmbeddingEndpoint({
           provider: "remote",
           baseUrl,
           apiKey,
@@ -891,7 +1179,13 @@ export function registerAiIpcHandlers(): void {
           dimension,
           hfRemoteHost: "",
           builtinModelCacheDir: "",
-        };
+          ...(isRecord(draft.config)
+            ? {
+                remoteEmbedBatchSize: mergeAiConfigWithDefaults(draft.config)
+                  .embedding.remoteEmbedBatchSize,
+              }
+            : {}),
+        });
         await embedTexts(remoteEndpoint, ["ping"]);
         return { ok: true };
       } catch (e) {
@@ -990,6 +1284,12 @@ export function registerAiIpcHandlers(): void {
     deleteThread(threadId);
   });
 
+  ipcMain.handle("ai:thread:deleteAll", async () => {
+    const c = await cfg();
+    openOrRecreateAiVectorDb(c.embedding.dimension);
+    deleteAllThreads();
+  });
+
   ipcMain.handle(
     "ai:thread:deleteEmptyForBook",
     async (_evt, bookHash: unknown, exceptThreadId?: unknown) => {
@@ -1072,6 +1372,10 @@ export function registerAiIpcHandlers(): void {
       if (!isRecord(payloadRaw)) return { error: "无效参数" };
       const bookHash = payloadRaw.bookHash;
       const characterName = payloadRaw.characterName;
+      const characterAliases =
+        typeof payloadRaw.characterAliases === "string"
+          ? payloadRaw.characterAliases
+          : undefined;
       const spoilerSafe = payloadRaw.spoilerSafe === true;
       const activeChapterIdx = payloadRaw.activeChapterIdx;
       if (typeof bookHash !== "string" || typeof characterName !== "string") {
@@ -1089,6 +1393,47 @@ export function registerAiIpcHandlers(): void {
       return runCharacterPortraitExtract(c, {
         bookHash,
         characterName,
+        characterAliases,
+        spoilerSafe,
+        activeChapterIdx: ch,
+        signal,
+      });
+    },
+  );
+
+  ipcMain.handle(
+    "ai:portrait:goldenQuotes",
+    async (
+      _evt,
+      payloadRaw: unknown,
+    ): Promise<CharacterGoldenQuotesResult | { error: string }> => {
+      const c = await cfg();
+      openOrRecreateAiVectorDb(c.embedding.dimension);
+      if (!isRecord(payloadRaw)) return { error: "无效参数" };
+      const bookHash = payloadRaw.bookHash;
+      const characterName = payloadRaw.characterName;
+      const characterAliases =
+        typeof payloadRaw.characterAliases === "string"
+          ? payloadRaw.characterAliases
+          : undefined;
+      const spoilerSafe = payloadRaw.spoilerSafe === true;
+      const activeChapterIdx = payloadRaw.activeChapterIdx;
+      if (typeof bookHash !== "string" || typeof characterName !== "string") {
+        return { error: "无效 bookHash 或角色名" };
+      }
+      const ch =
+        typeof activeChapterIdx === "number" && Number.isFinite(activeChapterIdx)
+          ? Math.trunc(activeChapterIdx)
+          : -1;
+      const retrieveSessionId = parseRetrieveSessionId(payloadRaw);
+      const signal =
+        retrieveSessionId != null
+          ? portraitRetrieveSessionAc(retrieveSessionId).signal
+          : undefined;
+      return runCharacterGoldenQuotesRetrieve(c, {
+        bookHash,
+        characterName,
+        characterAliases,
         spoilerSafe,
         activeChapterIdx: ch,
         signal,

@@ -1,5 +1,6 @@
 export type Rgb = { r: number; g: number; b: number };
 export type Hsv = { h: number; s: number; v: number };
+export type Hsl = { h: number; s: number; l: number };
 
 const HEX6 = /^#?([0-9a-fA-F]{6})$/;
 const HEX_CHARS = /^[0-9a-fA-F]+$/;
@@ -109,5 +110,58 @@ export function hexToHsv(hex: string): Hsv | null {
 
 export function hsvToHex(h: number, s: number, v: number): string {
   const { r, g, b } = hsvToRgb(h, s, v);
+  return rgbToHex(r, g, b);
+}
+
+export function rgbToHsl(r: number, g: number, b: number): Hsl {
+  r /= 255;
+  g /= 255;
+  b /= 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  let h = 0;
+  let s = 0;
+  if (max - min > 1e-6) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+    else if (max === g) h = ((b - r) / d + 2) / 6;
+    else h = ((r - g) / d + 4) / 6;
+  }
+  return { h: h * 360, s, l };
+}
+
+export function hslToRgb(h: number, s: number, l: number): Rgb {
+  const hh = (((h % 360) + 360) % 360) / 360;
+  if (s <= 1e-6) {
+    const x = Math.round(l * 255);
+    return { r: x, g: x, b: x };
+  }
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  const chan = (t: number) => {
+    if (t < 0) t += 1;
+    if (t > 1) t -= 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+  return {
+    r: Math.round(chan(hh + 1 / 3) * 255),
+    g: Math.round(chan(hh) * 255),
+    b: Math.round(chan(hh - 1 / 3) * 255),
+  };
+}
+
+export function hexToHsl(hex: string): Hsl | null {
+  const rgb = parseHex6(hex);
+  if (!rgb) return null;
+  return rgbToHsl(rgb.r, rgb.g, rgb.b);
+}
+
+export function hslToHex(h: number, s: number, l: number): string {
+  const { r, g, b } = hslToRgb(h, s, l);
   return rgbToHex(r, g, b);
 }
